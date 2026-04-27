@@ -13,8 +13,8 @@ from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8452616761:AAE7E-cadqGwikNwn44b-evrzdSCdFsN8Zw").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "626387429") or 626387429)
 DB_PATH = os.getenv("DB_PATH", "reputation_bot.db").strip()
 
 if not BOT_TOKEN:
