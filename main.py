@@ -3,7 +3,7 @@ from contextlib import closing
 from datetime import datetime
 from urllib.parse import parse_qsl
 
-from aiohttp import web
+from aiohttp import web, ClientSession
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -21,6 +21,11 @@ ADMIN_GROUP_ID = int(os.getenv('ADMIN_GROUP_ID', '0') or 0)
 WEBAPP_URL = os.getenv('WEBAPP_URL', '').strip()
 DB_PATH = os.getenv('DB_PATH', 'market.db')
 PORT = int(os.getenv('PORT', '8080'))
+CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN', '').strip()
+CRYPTO_ASSET = os.getenv('CRYPTO_ASSET', 'USDT').strip().upper()
+CRYPTO_PAY_TESTNET = os.getenv('CRYPTO_PAY_TESTNET', '0').strip() == '1'
+CRYPTO_API_HOST = 'testnet-pay.crypt.bot' if CRYPTO_PAY_TESTNET else 'pay.crypt.bot'
+CRYPTO_API = f'https://{CRYPTO_API_HOST}/api'
 BOT_USERNAME = ''
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -70,6 +75,7 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS balance_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, admin_id INTEGER, amount REAL, reason TEXT, created_at INTEGER);
         CREATE TABLE IF NOT EXISTS withdraws(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, details TEXT, status TEXT DEFAULT 'pending', created_at INTEGER);
+        CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, asset TEXT, invoice_id TEXT UNIQUE, pay_url TEXT, status TEXT DEFAULT 'created', created_at INTEGER, paid_at INTEGER);
         ''')
         db.commit()
 
@@ -112,7 +118,38 @@ class Buy(StatesGroup): confirm=State()
 class SellerApply(StatesGroup): pass
 class CodeState(StatesGroup): code=State()
 class AddBal(StatesGroup): user_id=State(); amount=State(); reason=State()
+class Deposit(StatesGroup): amount=State()
 class Withdraw(StatesGroup): amount=State(); details=State()
+
+async def crypto_call(method: str, payload: dict):
+    if not CRYPTO_PAY_TOKEN:
+        raise RuntimeError('CRYPTO_PAY_TOKEN не указан в Railway Variables')
+    headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN, 'Content-Type': 'application/json'}
+    async with ClientSession() as session:
+        async with session.post(f'{CRYPTO_API}/{method}', headers=headers, json=payload, timeout=25) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get('ok'):
+                raise RuntimeError(str(data))
+            return data.get('result')
+
+async def create_crypto_invoice(user_id: int, amount: float):
+    result = await crypto_call('createInvoice', {
+        'asset': CRYPTO_ASSET,
+        'amount': str(amount),
+        'description': f'Diamond Market balance top-up for {user_id}',
+        'payload': f'deposit:{user_id}:{int(time.time())}',
+        'allow_comments': False,
+        'allow_anonymous': False,
+        'expires_in': 3600,
+    })
+    invoice_id = str(result.get('invoice_id'))
+    pay_url = result.get('bot_invoice_url') or result.get('mini_app_invoice_url') or result.get('web_app_invoice_url') or ''
+    return invoice_id, pay_url
+
+async def invoice_is_paid(invoice_id: str) -> bool:
+    result = await crypto_call('getInvoices', {'invoice_ids': invoice_id})
+    items = result.get('items') if isinstance(result, dict) else []
+    return bool(items and items[0].get('status') == 'paid')
 
 async def home_msg(msg):
     await msg.answer('''💎 <b>Diamond Market</b>\n\nДобро пожаловать в маркет с гарантом.\n\n💰 Баланс — в профиле\n📦 Покупки — купленные товары\n💼 Режим продавца — выставление товаров''', reply_markup=buyer_kb())
@@ -254,8 +291,55 @@ async def profile(c:CallbackQuery):
     await c.message.edit_text(f'''👤 <b>Профиль</b>\n\n🪪 Никнейм: <b>{u['full_name']}</b>\n🆔 ID: <code>{u['user_id']}</code>\n💰 Баланс: <b>{cash(u['balance'])}$</b>\n🧊 Заморожено: <b>{cash(u['frozen'])}$</b>\n📦 Сделок: <b>{u['deals_count']}</b>\n➕ Всего пополнено: <b>{cash(u['total_deposit'])}$</b>\n📅 Регистрация: {dtime(u['registered_at'])}''', reply_markup=ik([[('➕ Пополнить','deposit'),('➖ Вывести','withdraw')],[('🏠 Главное меню','buyer_home')]])); await c.answer()
 
 @router.callback_query(F.data=='deposit')
-async def deposit(c:CallbackQuery):
-    await c.message.edit_text('''➕ <b>Пополнение баланса</b>\n\nСейчас пополнение ручное через администратора.\n\nНапишите администратору свой ID и сумму.\nАдмин добавит баланс через /admin → «Добавить баланс».''', reply_markup=ik([[('👤 Профиль','profile')]])); await c.answer()
+async def deposit(c:CallbackQuery, state:FSMContext):
+    ensure_user(c.from_user)
+    if not CRYPTO_PAY_TOKEN:
+        await c.message.edit_text('⚠️ <b>CryptoBot не настроен</b>\n\nДобавь в Railway Variables:\n<code>CRYPTO_PAY_TOKEN=токен_cryptobot</code>\n<code>CRYPTO_ASSET=USDT</code>', reply_markup=ik([[('👤 Профиль','profile')]]))
+        await c.answer(); return
+    await state.set_state(Deposit.amount)
+    await c.message.answer(f'➕ <b>Пополнение баланса</b>\n\nВведите сумму в <b>{CRYPTO_ASSET}</b>, например: <code>10</code>')
+    await c.answer()
+
+@router.message(Deposit.amount)
+async def deposit_amount(m:Message, state:FSMContext):
+    ensure_user(m.from_user)
+    try:
+        amount=float((m.text or '').replace(',','.'))
+        if amount <= 0: raise ValueError
+    except Exception:
+        return await m.answer('❌ Введите сумму числом больше 0. Пример: <code>10</code>')
+    try:
+        invoice_id, pay_url = await create_crypto_invoice(m.from_user.id, amount)
+    except Exception as e:
+        await state.clear()
+        return await m.answer(f'❌ Не удалось создать счет CryptoBot:\n<code>{str(e)[:700]}</code>')
+    with closing(conn()) as db:
+        db.execute('INSERT INTO invoices(user_id,amount,asset,invoice_id,pay_url,created_at) VALUES(?,?,?,?,?,?)',(m.from_user.id,amount,CRYPTO_ASSET,invoice_id,pay_url,ts()))
+        db.commit()
+    await state.clear()
+    await m.answer(f'💳 <b>Счет на пополнение создан</b>\n\nСумма: <b>{cash(amount)} {CRYPTO_ASSET}</b>\nСчет: <code>{invoice_id}</code>\n\nПосле оплаты нажмите «Проверить оплату».', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Оплатить через CryptoBot', url=pay_url)], [InlineKeyboardButton(text='🔄 Проверить оплату', callback_data='check_invoice:'+invoice_id)], [InlineKeyboardButton(text='👤 Профиль', callback_data='profile')]]))
+
+@router.callback_query(F.data.startswith('check_invoice:'))
+async def check_invoice(c:CallbackQuery):
+    invoice_id = c.data.split(':',1)[1]
+    with closing(conn()) as db:
+        inv=db.execute('SELECT * FROM invoices WHERE invoice_id=? AND user_id=?',(invoice_id,c.from_user.id)).fetchone()
+        if not inv:
+            return await c.answer('Счет не найден', show_alert=True)
+        if inv['status']=='paid':
+            return await c.answer('Этот счет уже зачислен', show_alert=True)
+    try:
+        paid = await invoice_is_paid(invoice_id)
+    except Exception as e:
+        return await c.answer(f'Ошибка проверки: {str(e)[:150]}', show_alert=True)
+    if not paid:
+        return await c.answer('Оплата пока не найдена', show_alert=True)
+    with closing(conn()) as db:
+        db.execute('UPDATE invoices SET status="paid", paid_at=? WHERE invoice_id=?',(ts(),invoice_id))
+        db.execute('UPDATE users SET balance=balance+?, total_deposit=total_deposit+? WHERE user_id=?',(inv['amount'],inv['amount'],c.from_user.id))
+        db.commit()
+    await c.message.edit_text(f'✅ <b>Оплата найдена</b>\n\nБаланс пополнен на <b>{cash(inv["amount"])} {inv["asset"]}</b>.', reply_markup=ik([[('👤 Профиль','profile')],[('🏠 Главное меню','buyer_home')]]))
+    await c.answer('Баланс пополнен')
 
 @router.callback_query(F.data=='withdraw')
 async def withdraw_start(c:CallbackQuery, state:FSMContext):
@@ -447,7 +531,7 @@ HTML = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name
 const tg=window.Telegram?.WebApp; tg?.expand(); tg?.setHeaderColor('#050505'); tg?.setBackgroundColor('#050505');
 function toast(t){let x=document.getElementById('toast');x.textContent=t;x.style.display='block';setTimeout(()=>x.style.display='none',2600)}
 async function api(path,body){let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,initData:tg?.initData||''})});return await r.json()}
-async function load(){let r=await fetch('/api/products');let d=await r.json();document.getElementById('cnt').textContent='Товаров: '+d.items.length;document.getElementById('bal').textContent='Баланс: '+(d.balance??'—')+'$';let list=document.getElementById('list');list.innerHTML='';if(!d.items.length){list.innerHTML='<div class="empty">Пока нет активных товаров</div>';return}d.items.forEach(p=>{let el=document.createElement('div');el.className='card';el.innerHTML=`<div class="row"><div><div class="phone">📱 ${p.phone}</div><div class="muted">Продавец: ${p.seller}</div></div><div class="price">${p.price}$</div></div><div class="desc">${p.description}</div><button class="btn">Купить</button>`;el.querySelector('button').onclick=async()=>{let res=await api('/api/buy',{product_id:p.id});toast(res.message||'Готово');if(res.ok) setTimeout(load,800)};list.appendChild(el)})}
+async function load(){let r=await fetch('/api/products?initData='+encodeURIComponent(tg?.initData||''));let d=await r.json();document.getElementById('cnt').textContent='Товаров: '+d.items.length;document.getElementById('bal').textContent='Баланс: '+(d.balance??'—')+'$';let list=document.getElementById('list');list.innerHTML='';if(!d.items.length){list.innerHTML='<div class="empty">Пока нет активных товаров</div>';return}d.items.forEach(p=>{let el=document.createElement('div');el.className='card';el.innerHTML=`<div class="row"><div><div class="phone">📱 ${p.phone}</div><div class="muted">Продавец: ${p.seller}</div></div><div class="price">${p.price}$</div></div><div class="desc">${p.description}</div><button class="btn">Купить</button>`;el.querySelector('button').onclick=async()=>{let res=await api('/api/buy',{product_id:p.id});toast(res.message||'Готово');if(res.ok) setTimeout(load,800)};list.appendChild(el)})}
 load();
 </script></body></html>'''
 
