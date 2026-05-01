@@ -24,6 +24,7 @@ PORT = int(os.getenv('PORT', '8080'))
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN', '').strip()
 CRYPTO_ASSET = os.getenv('CRYPTO_ASSET', 'USDT').strip().upper()
 DEPOSIT_FEE_PERCENT = float(os.getenv('DEPOSIT_FEE_PERCENT', '6') or 6)
+MIN_WITHDRAW_DEFAULT = float(os.getenv('MIN_WITHDRAW_AMOUNT', '1') or 1)
 CRYPTO_PAY_TESTNET = os.getenv('CRYPTO_PAY_TESTNET', '0').strip() == '1'
 CRYPTO_API_HOST = 'testnet-pay.crypt.bot' if CRYPTO_PAY_TESTNET else 'pay.crypt.bot'
 CRYPTO_API = f'https://{CRYPTO_API_HOST}/api'
@@ -77,8 +78,26 @@ def init_db():
         CREATE TABLE IF NOT EXISTS balance_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, admin_id INTEGER, amount REAL, reason TEXT, created_at INTEGER);
         CREATE TABLE IF NOT EXISTS withdraws(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, details TEXT, status TEXT DEFAULT 'pending', created_at INTEGER);
         CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, asset TEXT, invoice_id TEXT UNIQUE, pay_url TEXT, status TEXT DEFAULT 'created', created_at INTEGER, paid_at INTEGER);
+        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
         ''')
+        db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)', ('min_withdraw_amount', str(MIN_WITHDRAW_DEFAULT)))
         db.commit()
+
+def get_setting(key: str, default: str = '') -> str:
+    with closing(conn()) as db:
+        row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        return row['value'] if row else default
+
+def set_setting(key: str, value: str):
+    with closing(conn()) as db:
+        db.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, value))
+        db.commit()
+
+def min_withdraw_amount() -> float:
+    try:
+        return float(get_setting('min_withdraw_amount', str(MIN_WITHDRAW_DEFAULT)))
+    except Exception:
+        return MIN_WITHDRAW_DEFAULT
 
 def ensure_user(u):
     with closing(conn()) as db:
@@ -112,13 +131,14 @@ def seller_kb():
     return ik([[('➕ Выставить номер','add_product')],[('👤 Профиль продавца','seller_profile'),('📊 Продажи','sales')],[('🛒 Режим покупателя','buyer_home')]])
 
 def admin_kb():
-    return ik([[('💰 Добавить баланс','admin_add_balance')],[('📦 Товары на модерации','admin_products')],[('👥 Заявки продавцов','admin_sellers')]])
+    return ik([[('💰 Добавить баланс','admin_add_balance')],[('⚙️ Настройки','admin_settings')],[('📦 Товары на модерации','admin_products')],[('👥 Заявки продавцов','admin_sellers')]])
 
 class AddProduct(StatesGroup): phone=State(); price=State(); desc=State()
 class Buy(StatesGroup): confirm=State()
 class SellerApply(StatesGroup): pass
 class CodeState(StatesGroup): code=State()
 class AddBal(StatesGroup): user_id=State(); amount=State(); reason=State()
+class SetMinWithdraw(StatesGroup): amount=State()
 class Deposit(StatesGroup): amount=State()
 class Withdraw(StatesGroup): amount=State(); details=State()
 
@@ -379,6 +399,7 @@ async def withdraw_start(c:CallbackQuery, state:FSMContext):
 
 Средства будут отправлены через CryptoBot на ваш Telegram ID.
 Ваш баланс: <b>{cash(u["balance"])} {CRYPTO_ASSET}</b>
+Минимальная сумма вывода: <b>{cash(min_withdraw_amount())} {CRYPTO_ASSET}</b>
 
 Введите сумму вывода:''')
     await c.answer()
@@ -391,6 +412,9 @@ async def withdraw_amount(m:Message, state:FSMContext):
         if amount<=0: raise ValueError
     except Exception:
         return await m.answer('❌ Введите сумму числом больше 0.')
+    min_w = min_withdraw_amount()
+    if amount < min_w:
+        return await m.answer(f'❌ Минимальная сумма вывода: <b>{cash(min_w)} {CRYPTO_ASSET}</b>')
     u=user(m.from_user.id)
     if float(u['balance'])<amount:
         return await m.answer('❌ Недостаточно средств.')
@@ -536,6 +560,50 @@ async def admin(m:Message):
     with closing(conn()) as db:
         users=db.execute('SELECT COUNT(*) c FROM users').fetchone()['c']; products=db.execute('SELECT COUNT(*) c FROM products WHERE status="moderation"').fetchone()['c']; sellers=db.execute('SELECT COUNT(*) c FROM seller_requests WHERE status="pending"').fetchone()['c']
     await m.answer(f'🛡 <b>Админ-панель</b>\n\n👥 Пользователей: {users}\n📦 Товаров на модерации: {products}\n💼 Заявок продавцов: {sellers}', reply_markup=admin_kb())
+
+
+@router.callback_query(F.data=='admin_settings')
+async def admin_settings(c:CallbackQuery):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    await c.message.edit_text(
+        f'''⚙️ <b>Настройки маркета</b>
+
+➕ Комиссия пополнения: <b>{cash(DEPOSIT_FEE_PERCENT)}%</b>
+➖ Минимальный вывод: <b>{cash(min_withdraw_amount())} {CRYPTO_ASSET}</b>
+
+Выберите настройку:''',
+        reply_markup=ik([[('➖ Изменить мин. вывод','admin_set_min_withdraw')],[('⬅️ Админ-панель','admin_back')]])
+    )
+    await c.answer()
+
+@router.callback_query(F.data=='admin_back')
+async def admin_back(c:CallbackQuery):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    with closing(conn()) as db:
+        users=db.execute('SELECT COUNT(*) c FROM users').fetchone()['c']
+        products=db.execute('SELECT COUNT(*) c FROM products WHERE status="moderation"').fetchone()['c']
+        sellers=db.execute('SELECT COUNT(*) c FROM seller_requests WHERE status="pending"').fetchone()['c']
+    await c.message.edit_text(f'🛡 <b>Админ-панель</b>\n\n👥 Пользователей: {users}\n📦 Товаров на модерации: {products}\n💼 Заявок продавцов: {sellers}\n➖ Мин. вывод: <b>{cash(min_withdraw_amount())} {CRYPTO_ASSET}</b>', reply_markup=admin_kb())
+    await c.answer()
+
+@router.callback_query(F.data=='admin_set_min_withdraw')
+async def admin_set_min_withdraw(c:CallbackQuery, state:FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа',show_alert=True)
+    await state.set_state(SetMinWithdraw.amount)
+    await c.message.answer(f'Введите новую минимальную сумму вывода в {CRYPTO_ASSET}.\nНапример: <code>1</code>')
+    await c.answer()
+
+@router.message(SetMinWithdraw.amount)
+async def admin_save_min_withdraw(m:Message, state:FSMContext):
+    if not is_admin(m.from_user.id): return
+    try:
+        amount=float((m.text or '').replace(',','.'))
+        if amount < 0: raise ValueError
+    except Exception:
+        return await m.answer('Введите сумму числом. Например: <code>1</code>')
+    set_setting('min_withdraw_amount', str(amount))
+    await state.clear()
+    await m.answer(f'✅ Минимальная сумма вывода изменена на <b>{cash(amount)} {CRYPTO_ASSET}</b>.', reply_markup=admin_kb())
 
 @router.callback_query(F.data=='admin_add_balance')
 async def admin_add_bal(c:CallbackQuery,state:FSMContext):
