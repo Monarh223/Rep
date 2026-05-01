@@ -325,21 +325,21 @@ async def deposit_amount(m:Message, state:FSMContext):
         invoice_id, pay_url, pay_amount, fee_amount = await create_crypto_invoice(m.from_user.id, amount)
     except Exception as e:
         await state.clear()
-        return await m.answer(f'❌ Не удалось создать счет CryptoBot:
-<code>{str(e)[:700]}</code>')
+        return await m.answer(f'''❌ Не удалось создать счет CryptoBot:
+<code>{str(e)[:700]}</code>''')
     with closing(conn()) as db:
         # amount здесь — сумма, которая будет зачислена на баланс. Пользователь оплачивает amount + комиссию.
         db.execute('INSERT INTO invoices(user_id,amount,asset,invoice_id,pay_url,created_at) VALUES(?,?,?,?,?,?)',(m.from_user.id,amount,CRYPTO_ASSET,invoice_id,pay_url,ts()))
         db.commit()
     await state.clear()
-    await m.answer(f'💳 <b>Счет на пополнение создан</b>
+    await m.answer(f'''💳 <b>Счет на пополнение создан</b>
 
 💰 К зачислению: <b>{cash(amount)} {CRYPTO_ASSET}</b>
 🧾 Комиссия {cash(DEPOSIT_FEE_PERCENT)}%: <b>{cash(fee_amount)} {CRYPTO_ASSET}</b>
 💎 К оплате: <b>{cash(pay_amount)} {CRYPTO_ASSET}</b>
 Счет: <code>{invoice_id}</code>
 
-После оплаты нажмите «Проверить оплату».', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Оплатить через CryptoBot', url=pay_url)], [InlineKeyboardButton(text='🔄 Проверить оплату', callback_data='check_invoice:'+invoice_id)], [InlineKeyboardButton(text='👤 Профиль', callback_data='profile')]]))
+После оплаты нажмите «Проверить оплату».''', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Оплатить через CryptoBot', url=pay_url)], [InlineKeyboardButton(text='🔄 Проверить оплату', callback_data='check_invoice:'+invoice_id)], [InlineKeyboardButton(text='👤 Профиль', callback_data='profile')]]))
 
 @router.callback_query(F.data.startswith('check_invoice:'))
 async def check_invoice(c:CallbackQuery):
@@ -367,20 +367,20 @@ async def check_invoice(c:CallbackQuery):
 async def withdraw_start(c:CallbackQuery, state:FSMContext):
     ensure_user(c.from_user)
     if not CRYPTO_PAY_TOKEN:
-        await c.message.edit_text('⚠️ <b>CryptoBot не настроен</b>
+        await c.message.edit_text('''⚠️ <b>CryptoBot не настроен</b>
 
 Добавь в Railway Variables:
 <code>CRYPTO_PAY_TOKEN=токен_cryptobot</code>
-<code>CRYPTO_ASSET=USDT</code>', reply_markup=ik([[('👤 Профиль','profile')]]))
+<code>CRYPTO_ASSET=USDT</code>''', reply_markup=ik([[('👤 Профиль','profile')]]))
         await c.answer(); return
     u=user(c.from_user.id)
     await state.set_state(Withdraw.amount)
-    await c.message.answer(f'➖ <b>Автоматический вывод</b>
+    await c.message.answer(f'''➖ <b>Автоматический вывод</b>
 
 Средства будут отправлены через CryptoBot на ваш Telegram ID.
 Ваш баланс: <b>{cash(u["balance"])} {CRYPTO_ASSET}</b>
 
-Введите сумму вывода:')
+Введите сумму вывода:''')
     await c.answer()
 
 @router.message(Withdraw.amount)
@@ -406,26 +406,26 @@ async def withdraw_amount(m:Message, state:FSMContext):
             db.execute('UPDATE withdraws SET status=?, details=? WHERE id=?',('completed',f'CryptoBot transfer_id: {transfer_id}',wid))
             db.commit()
         await state.clear()
-        await m.answer(f'✅ <b>Вывод выполнен автоматически</b>
+        await m.answer(f'''✅ <b>Вывод выполнен автоматически</b>
 
 Сумма: <b>{cash(amount)} {CRYPTO_ASSET}</b>
-Transfer ID: <code>{transfer_id}</code>', reply_markup=ik([[('👤 Профиль','profile')],[('🏠 Главное меню','buyer_home')]]))
+Transfer ID: <code>{transfer_id}</code>''', reply_markup=ik([[('👤 Профиль','profile')],[('🏠 Главное меню','buyer_home')]]))
         if ADMIN_GROUP_ID:
-            await m.bot.send_message(ADMIN_GROUP_ID, f'✅ Автовывод #{wid} выполнен
+            await m.bot.send_message(ADMIN_GROUP_ID, f'''✅ Автовывод #{wid} выполнен
 Пользователь: {link(m.from_user)} / <code>{m.from_user.id}</code>
 Сумма: {cash(amount)} {CRYPTO_ASSET}
-Transfer ID: <code>{transfer_id}</code>')
+Transfer ID: <code>{transfer_id}</code>''')
     except Exception as e:
         with closing(conn()) as db:
             db.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(amount,m.from_user.id))
             db.execute('UPDATE withdraws SET status=?, details=? WHERE id=?',('failed',str(e)[:500],wid))
             db.commit()
         await state.clear()
-        await m.answer(f'❌ <b>Вывод не прошел</b>
+        await m.answer(f'''❌ <b>Вывод не прошел</b>
 
 Деньги возвращены на баланс.
 Ошибка CryptoBot:
-<code>{str(e)[:700]}</code>')
+<code>{str(e)[:700]}</code>''')
 
 @router.callback_query(F.data=='seller_mode')
 async def seller_mode(c:CallbackQuery):
