@@ -1,4 +1,4 @@
-import asyncio, hashlib, hmac, json, logging, os, re, sqlite3, time
+import asyncio, hashlib, hmac, json, logging, os, re, sqlite3, time, shutil, tempfile
 from contextlib import closing
 from datetime import datetime
 from urllib.parse import parse_qsl
@@ -11,21 +11,32 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, FSInputFile
 
+# =========================
+# ОСНОВНЫЕ НАСТРОЙКИ
+# =========================
+# В Railway Variables нужны только секреты/ссылки:
+# BOT_TOKEN, CRYPTO_PAY_TOKEN, WEBAPP_URL, ADMIN_GROUP_ID, DB_PATH
 BOT_TOKEN = os.getenv('BOT_TOKEN', '').strip()
 if not BOT_TOKEN:
     raise RuntimeError('BOT_TOKEN missing')
-ADMIN_IDS = {int(x) for x in os.getenv('ADMIN_IDS', '').replace(' ', '').split(',') if x}
+
+# Админов меняй прямо тут, без Railway ENV.
+ADMIN_IDS = {626387429, 713807432}
+
 ADMIN_GROUP_ID = int(os.getenv('ADMIN_GROUP_ID', '0') or 0)
 WEBAPP_URL = os.getenv('WEBAPP_URL', '').strip()
 DB_PATH = os.getenv('DB_PATH', 'market.db')
 PORT = int(os.getenv('PORT', '8080'))
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN', '').strip()
-CRYPTO_ASSET = os.getenv('CRYPTO_ASSET', 'USDT').strip().upper()
-DEPOSIT_FEE_PERCENT = float(os.getenv('DEPOSIT_FEE_PERCENT', '6') or 6)
-MIN_WITHDRAW_DEFAULT = float(os.getenv('MIN_WITHDRAW_AMOUNT', '1') or 1)
-CRYPTO_PAY_TESTNET = os.getenv('CRYPTO_PAY_TESTNET', '0').strip() == '1'
+
+# Простые настройки в коде. Через админку они сохраняются в БД.
+CRYPTO_ASSET = 'USDT'
+DEPOSIT_FEE_PERCENT = 6.0
+MIN_WITHDRAW_DEFAULT = 1.01
+MARKET_FEE_DEFAULT = 5.0
+CRYPTO_PAY_TESTNET = False
 CRYPTO_API_HOST = 'testnet-pay.crypt.bot' if CRYPTO_PAY_TESTNET else 'pay.crypt.bot'
 CRYPTO_API = f'https://{CRYPTO_API_HOST}/api'
 BOT_USERNAME = ''
@@ -79,8 +90,27 @@ def init_db():
         CREATE TABLE IF NOT EXISTS withdraws(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, details TEXT, status TEXT DEFAULT 'pending', created_at INTEGER);
         CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, asset TEXT, invoice_id TEXT UNIQUE, pay_url TEXT, status TEXT DEFAULT 'created', created_at INTEGER, paid_at INTEGER);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS transactions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, type TEXT, reason TEXT,
+            ref_type TEXT, ref_id INTEGER, created_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS reviews(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER UNIQUE, buyer_id INTEGER, seller_id INTEGER,
+            rating INTEGER, comment TEXT, created_at INTEGER
+        );
         ''')
+        for sql in [
+            'ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0',
+            'ALTER TABLE users ADD COLUMN market_fee_earned REAL DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN market_fee REAL DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN seller_receive REAL DEFAULT 0',
+        ]:
+            try:
+                db.execute(sql)
+            except sqlite3.OperationalError:
+                pass
         db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)', ('min_withdraw_amount', str(MIN_WITHDRAW_DEFAULT)))
+        db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)', ('market_fee_percent', str(MARKET_FEE_DEFAULT)))
         db.commit()
 
 def get_setting(key: str, default: str = '') -> str:
@@ -98,6 +128,23 @@ def min_withdraw_amount() -> float:
         return float(get_setting('min_withdraw_amount', str(MIN_WITHDRAW_DEFAULT)))
     except Exception:
         return MIN_WITHDRAW_DEFAULT
+
+def market_fee_percent() -> float:
+    try:
+        return float(get_setting('market_fee_percent', str(MARKET_FEE_DEFAULT)))
+    except Exception:
+        return MARKET_FEE_DEFAULT
+
+def add_tx(db, user_id:int, amount:float, typ:str, reason:str='', ref_type:str='', ref_id:int=0):
+    db.execute('INSERT INTO transactions(user_id,amount,type,reason,ref_type,ref_id,created_at) VALUES(?,?,?,?,?,?,?)',
+               (user_id, amount, typ, reason, ref_type, ref_id, ts()))
+
+def user_banned(uid:int) -> bool:
+    r = user(uid)
+    try:
+        return bool(r and r['banned'])
+    except Exception:
+        return False
 
 def ensure_user(u):
     with closing(conn()) as db:
@@ -128,10 +175,17 @@ def buyer_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def seller_kb():
-    return ik([[('➕ Выставить номер','add_product')],[('👤 Профиль продавца','seller_profile'),('📊 Продажи','sales')],[('🛒 Режим покупателя','buyer_home')]])
+    return ik([[('➕ Выставить номер','add_product')],[('📋 Мои товары','my_products')],[('👤 Профиль продавца','seller_profile'),('📊 Продажи','sales')],[('🛒 Режим покупателя','buyer_home')]])
 
 def admin_kb():
-    return ik([[('💰 Добавить баланс','admin_add_balance')],[('⚙️ Настройки','admin_settings')],[('📦 Товары на модерации','admin_products')],[('👥 Заявки продавцов','admin_sellers')]])
+    return ik([
+        [('📊 Статистика','admin_stats')],
+        [('👤 Найти пользователя','admin_find_user'), ('💰 Добавить баланс','admin_add_balance')],
+        [('⚙️ Настройки','admin_settings')],
+        [('📤 Выгрузить БД','admin_export_db'), ('📥 Загрузить БД','admin_import_db')],
+        [('📦 Товары на модерации','admin_products')],
+        [('👥 Заявки продавцов','admin_sellers')]
+    ])
 
 class AddProduct(StatesGroup): phone=State(); price=State(); desc=State()
 class Buy(StatesGroup): confirm=State()
@@ -139,6 +193,9 @@ class SellerApply(StatesGroup): pass
 class CodeState(StatesGroup): code=State()
 class AddBal(StatesGroup): user_id=State(); amount=State(); reason=State()
 class SetMinWithdraw(StatesGroup): amount=State()
+class SetMarketFee(StatesGroup): amount=State()
+class FindUser(StatesGroup): user_id=State()
+class ImportDB(StatesGroup): file=State()
 class Deposit(StatesGroup): amount=State()
 class Withdraw(StatesGroup): amount=State(); details=State()
 
@@ -230,6 +287,7 @@ async def product(c:CallbackQuery):
 @router.callback_query(F.data.startswith('buy:'))
 async def buy(c:CallbackQuery):
     ensure_user(c.from_user); pid=int(c.data.split(':')[1])
+    if user_banned(c.from_user.id): return await c.answer('⛔️ Вы заблокированы в маркете', show_alert=True)
     with closing(conn()) as db:
         p=db.execute('SELECT * FROM products WHERE id=? AND status="active"',(pid,)).fetchone(); u=user(c.from_user.id)
     if not p: return await c.answer('Товар недоступен', show_alert=True)
@@ -240,15 +298,20 @@ async def buy(c:CallbackQuery):
 @router.callback_query(F.data.startswith('buy_confirm:'))
 async def buy_confirm(c:CallbackQuery):
     ensure_user(c.from_user); pid=int(c.data.split(':')[1])
+    if user_banned(c.from_user.id): return await c.answer('⛔️ Вы заблокированы в маркете', show_alert=True)
     with closing(conn()) as db:
         p=db.execute('SELECT * FROM products WHERE id=? AND status="active"',(pid,)).fetchone(); u=db.execute('SELECT * FROM users WHERE user_id=?',(c.from_user.id,)).fetchone()
         if not p: return await c.answer('Товар уже купили', show_alert=True)
         if float(u['balance']) < float(p['price']): return await c.answer('Недостаточно средств', show_alert=True)
         db.execute('UPDATE users SET balance=balance-?, frozen=frozen+?, deals_count=deals_count+1 WHERE user_id=?',(p['price'],p['price'],c.from_user.id))
         db.execute('UPDATE products SET status="sold" WHERE id=?',(pid,))
-        cur=db.execute('''INSERT INTO orders(buyer_id,seller_id,product_id,phone,price,description,status,created_at)
-                          VALUES(?,?,?,?,?,?,?,?)''',(c.from_user.id,p['seller_id'],pid,p['phone'],p['price'],p['description'],'waiting_code',ts()))
-        oid=cur.lastrowid; db.commit()
+        fee = round(float(p['price']) * market_fee_percent() / 100, 4)
+        seller_receive = round(float(p['price']) - fee, 4)
+        cur=db.execute('''INSERT INTO orders(buyer_id,seller_id,product_id,phone,price,description,status,created_at,market_fee,seller_receive)
+                          VALUES(?,?,?,?,?,?,?,?,?,?)''',(c.from_user.id,p['seller_id'],pid,p['phone'],p['price'],p['description'],'waiting_code',ts(),fee,seller_receive))
+        oid=cur.lastrowid
+        add_tx(db, c.from_user.id, -float(p['price']), 'purchase_hold', f'Покупка #{oid}, деньги заморожены', 'order', oid)
+        db.commit()
     await c.message.edit_text(f'✅ <b>Покупка создана</b>\n\nЗаказ №{oid}\nДеньги заморожены гарантом. Ожидаем код сделки от продавца.', reply_markup=ik([[('📦 Покупки','purchases')]]))
     await c.bot.send_message(p['seller_id'], f'🆕 <b>У вас купили товар</b>\n\nЗаказ №{oid}\nНомер: <code>{p["phone"]}</code>\nСумма: {cash(p["price"])}$\n\nОтправьте внутренний код сделки: 6 цифр.', reply_markup=ik([[('🔢 Отправить код','seller_send_code:'+str(oid))]]))
     await c.answer()
@@ -296,12 +359,16 @@ async def confirm_order(c:CallbackQuery):
     with closing(conn()) as db:
         o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=?',(oid,c.from_user.id)).fetchone()
         if not o or o['status']!='active': return await c.answer('Сделку нельзя подтвердить', show_alert=True)
-        db.execute('UPDATE orders SET status="closed", closed_at=? WHERE id=?',(ts(),oid))
-        db.execute('UPDATE users SET frozen=frozen-? WHERE user_id=?',(o['price'],o['buyer_id']))
-        db.execute('UPDATE users SET balance=balance+?, earned=earned+?, sold_count=sold_count+1, deals_count=deals_count+1 WHERE user_id=?',(o['price'],o['price'],o['seller_id']))
+        fee = float(o['market_fee'] or round(float(o['price']) * market_fee_percent() / 100, 4))
+        seller_receive = float(o['seller_receive'] or (float(o['price']) - fee))
+        db.execute('UPDATE orders SET status="closed", closed_at=?, market_fee=?, seller_receive=? WHERE id=?',(ts(),fee,seller_receive,oid))
+        db.execute('UPDATE users SET frozen=frozen-?, market_fee_earned=COALESCE(market_fee_earned,0)+? WHERE user_id=?',(o['price'],fee,o['buyer_id']))
+        db.execute('UPDATE users SET balance=balance+?, earned=earned+?, sold_count=sold_count+1, deals_count=deals_count+1 WHERE user_id=?',(seller_receive,seller_receive,o['seller_id']))
+        add_tx(db, o['buyer_id'], -float(o['price']), 'purchase_closed', f'Сделка #{oid} закрыта', 'order', oid)
+        add_tx(db, o['seller_id'], seller_receive, 'sale_income', f'Продажа #{oid}, комиссия {cash(fee)}$', 'order', oid)
         db.commit()
-    await c.message.edit_text('✅ Сделка закрыта. Деньги отправлены продавцу.', reply_markup=ik([[('🏠 Главное меню','buyer_home')]]))
-    await c.bot.send_message(o['seller_id'], f'✅ Сделка №{oid} подтверждена. На баланс зачислено {cash(o["price"])}$')
+    await c.message.edit_text('✅ Сделка закрыта. Деньги отправлены продавцу.\n\nОставьте отзыв о продавце:', reply_markup=ik([[('👍 Положительный','review_good:'+str(oid)),('👎 Отрицательный','review_bad:'+str(oid))],[('🏠 Главное меню','buyer_home')]]))
+    await c.bot.send_message(o['seller_id'], f'✅ Сделка №{oid} подтверждена. На баланс зачислено {cash(seller_receive)}$\nКомиссия маркета: {cash(fee)}$')
     await c.answer()
 
 @router.callback_query(F.data.startswith('dispute:'))
@@ -320,7 +387,7 @@ async def dispute(c:CallbackQuery):
 @router.callback_query(F.data=='profile')
 async def profile(c:CallbackQuery):
     ensure_user(c.from_user); u=user(c.from_user.id)
-    await c.message.edit_text(f'''👤 <b>Профиль</b>\n\n🪪 Никнейм: <b>{u['full_name']}</b>\n🆔 ID: <code>{u['user_id']}</code>\n💰 Баланс: <b>{cash(u['balance'])}$</b>\n🧊 Заморожено: <b>{cash(u['frozen'])}$</b>\n📦 Сделок: <b>{u['deals_count']}</b>\n➕ Всего пополнено: <b>{cash(u['total_deposit'])}$</b>\n📅 Регистрация: {dtime(u['registered_at'])}''', reply_markup=ik([[('➕ Пополнить','deposit'),('➖ Вывести','withdraw')],[('🏠 Главное меню','buyer_home')]])); await c.answer()
+    await c.message.edit_text(f'''👤 <b>Профиль</b>\n\n🪪 Никнейм: <b>{u['full_name']}</b>\n🆔 ID: <code>{u['user_id']}</code>\n💰 Баланс: <b>{cash(u['balance'])}$</b>\n🧊 Заморожено: <b>{cash(u['frozen'])}$</b>\n📦 Сделок: <b>{u['deals_count']}</b>\n➕ Всего пополнено: <b>{cash(u['total_deposit'])}$</b>\n📅 Регистрация: {dtime(u['registered_at'])}''', reply_markup=ik([[('➕ Пополнить','deposit'),('➖ Вывести','withdraw')],[('📜 История баланса','balance_history')],[('🏠 Главное меню','buyer_home')]])); await c.answer()
 
 @router.callback_query(F.data=='deposit')
 async def deposit(c:CallbackQuery, state:FSMContext):
@@ -378,6 +445,7 @@ async def check_invoice(c:CallbackQuery):
     with closing(conn()) as db:
         db.execute('UPDATE invoices SET status="paid", paid_at=? WHERE invoice_id=?',(ts(),invoice_id))
         db.execute('UPDATE users SET balance=balance+?, total_deposit=total_deposit+? WHERE user_id=?',(inv['amount'],inv['amount'],c.from_user.id))
+        add_tx(db, c.from_user.id, float(inv['amount']), 'deposit', 'Пополнение CryptoBot', 'invoice', inv['id'])
         db.commit()
     await c.message.edit_text(f'✅ <b>Оплата найдена</b>\n\nБаланс пополнен на <b>{cash(inv["amount"])} {inv["asset"]}</b>.', reply_markup=ik([[('👤 Профиль','profile')],[('🏠 Главное меню','buyer_home')]]))
     await c.answer('Баланс пополнен')
@@ -419,6 +487,7 @@ async def withdraw_amount(m:Message, state:FSMContext):
         return await m.answer('❌ Недостаточно средств.')
     with closing(conn()) as db:
         db.execute('UPDATE users SET balance=balance-? WHERE user_id=?',(amount,m.from_user.id))
+        add_tx(db, m.from_user.id, -amount, 'withdraw_start', 'Автовывод CryptoBot', 'withdraw', 0)
         cur=db.execute('INSERT INTO withdraws(user_id,amount,details,status,created_at) VALUES(?,?,?,?,?)',(m.from_user.id,amount,'CryptoBot auto transfer','processing',ts()))
         wid=cur.lastrowid
         db.commit()
@@ -427,6 +496,7 @@ async def withdraw_amount(m:Message, state:FSMContext):
         transfer_id = str(result.get('transfer_id') or result.get('id') or 'ok') if isinstance(result, dict) else 'ok'
         with closing(conn()) as db:
             db.execute('UPDATE withdraws SET status=?, details=? WHERE id=?',('completed',f'CryptoBot transfer_id: {transfer_id}',wid))
+            add_tx(db, m.from_user.id, -amount, 'withdraw_completed', f'Вывод CryptoBot transfer_id {transfer_id}', 'withdraw', wid)
             db.commit()
         await state.clear()
         await m.answer(f'''✅ <b>Вывод выполнен автоматически</b>
@@ -441,6 +511,7 @@ Transfer ID: <code>{transfer_id}</code>''')
     except Exception as e:
         with closing(conn()) as db:
             db.execute('UPDATE users SET balance=balance+? WHERE user_id=?',(amount,m.from_user.id))
+            add_tx(db, m.from_user.id, amount, 'withdraw_refund', 'Возврат после ошибки вывода', 'withdraw', wid)
             db.execute('UPDATE withdraws SET status=?, details=? WHERE id=?',('failed',str(e)[:500],wid))
             db.commit()
         await state.clear()
@@ -487,6 +558,7 @@ async def seller_decision(c:CallbackQuery):
 @router.callback_query(F.data=='add_product')
 async def add_product(c:CallbackQuery,state:FSMContext):
     u=user(c.from_user.id)
+    if user_banned(c.from_user.id): return await c.answer('⛔️ Вы заблокированы', show_alert=True)
     if not u or not u['seller']: return await c.answer('Нет доступа',show_alert=True)
     await state.set_state(AddProduct.phone); await c.message.answer('📱 Отправьте номер товара. Формат: +79001234567'); await c.answer()
 
@@ -536,7 +608,7 @@ async def prod_decision(c:CallbackQuery):
 @router.callback_query(F.data=='seller_profile')
 async def seller_profile(c:CallbackQuery):
     u=user(c.from_user.id)
-    await c.message.edit_text(f'''👑 <b>Профиль продавца</b>\n\nИмя: {u['full_name']}\nID: <code>{u['user_id']}</code>\nБаланс: <b>{cash(u['balance'])}$</b>\nЗаработано: <b>{cash(u['earned'])}$</b>\nПродаж: <b>{u['sold_count']}</b>\nСпоров: <b>{u['disputes']}</b>\nДата продавца: {dtime(u['seller_at'])}''', reply_markup=ik([[('➖ Вывести','withdraw')],[('🏠 Главное меню','seller_mode')]])); await c.answer()
+    await c.message.edit_text(f'''👑 <b>Профиль продавца</b>\n\nИмя: {u['full_name']}\nID: <code>{u['user_id']}</code>\nБаланс: <b>{cash(u['balance'])}$</b>\nЗаработано: <b>{cash(u['earned'])}$</b>\nПродаж: <b>{u['sold_count']}</b>\nСпоров: <b>{u['disputes']}</b>\nДата продавца: {dtime(u['seller_at'])}''', reply_markup=ik([[('➖ Вывести','withdraw')],[('📋 Мои товары','my_products'),('📊 Продажи','sales')],[('🏠 Главное меню','seller_mode')]])); await c.answer()
 
 @router.callback_query(F.data=='sales')
 async def sales(c:CallbackQuery):
@@ -569,9 +641,10 @@ async def admin_settings(c:CallbackQuery):
 
 ➕ Комиссия пополнения: <b>{cash(DEPOSIT_FEE_PERCENT)}%</b>
 ➖ Минимальный вывод: <b>{cash(min_withdraw_amount())} {CRYPTO_ASSET}</b>
+🏦 Комиссия с продаж: <b>{cash(market_fee_percent())}%</b>
 
 Выберите настройку:''',
-        reply_markup=ik([[('➖ Изменить мин. вывод','admin_set_min_withdraw')],[('⬅️ Админ-панель','admin_back')]])
+        reply_markup=ik([[('➖ Изменить мин. вывод','admin_set_min_withdraw')],[('🏦 Изменить комиссию продаж','admin_set_market_fee')],[('⬅️ Админ-панель','admin_back')]])
     )
     await c.answer()
 
@@ -631,10 +704,177 @@ async def admin_bal_reason(m:Message,state:FSMContext):
         db.execute('INSERT OR IGNORE INTO users(user_id,username,full_name,registered_at) VALUES(?,?,?,?)',(uid,'','',ts()))
         db.execute('UPDATE users SET balance=balance+?, total_deposit=total_deposit+? WHERE user_id=?',(amount,amount if amount>0 else 0,uid))
         db.execute('INSERT INTO balance_logs(user_id,admin_id,amount,reason,created_at) VALUES(?,?,?,?,?)',(uid,m.from_user.id,amount,reason,ts()))
+        add_tx(db, uid, amount, 'admin_balance', reason, 'admin', m.from_user.id)
         db.commit()
     await state.clear(); await m.answer(f'✅ Баланс пользователя <code>{uid}</code> изменен на {cash(amount)}$.')
     try: await m.bot.send_message(uid, f'💰 Баланс пополнен на <b>{cash(amount)}$</b>\nКомментарий: {reason}')
     except Exception: pass
+
+
+@router.callback_query(F.data=='balance_history')
+async def balance_history(c:CallbackQuery):
+    with closing(conn()) as db:
+        rows=db.execute('SELECT * FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 15',(c.from_user.id,)).fetchall()
+    text='📜 <b>История баланса</b>\n\n'
+    if rows:
+        for t in rows:
+            sign='+' if float(t['amount'])>0 else ''
+            text += f"{dtime(t['created_at'])} • <b>{sign}{cash(t['amount'])}$</b> • {t['type']}\n{t['reason'] or ''}\n\n"
+    else:
+        text += 'Операций пока нет.'
+    await c.message.edit_text(text, reply_markup=ik([[('👤 Профиль','profile')],[('🏠 Главное меню','buyer_home')]])); await c.answer()
+
+@router.callback_query(F.data.startswith('review_good:') | F.data.startswith('review_bad:'))
+async def review_save(c:CallbackQuery):
+    oid=int(c.data.split(':')[1]); rating=1 if c.data.startswith('review_good:') else -1
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=? AND status="closed"',(oid,c.from_user.id)).fetchone()
+        if not o: return await c.answer('Сделка не найдена', show_alert=True)
+        db.execute('INSERT OR REPLACE INTO reviews(order_id,buyer_id,seller_id,rating,comment,created_at) VALUES(?,?,?,?,?,?)',
+                   (oid,c.from_user.id,o['seller_id'],rating,'',ts()))
+        db.commit()
+    await c.message.edit_text('✅ Отзыв сохранен. Спасибо!', reply_markup=ik([[('🏠 Главное меню','buyer_home')]]))
+    await c.answer()
+
+@router.callback_query(F.data=='my_products')
+async def my_products(c:CallbackQuery):
+    with closing(conn()) as db:
+        rows=db.execute('SELECT * FROM products WHERE seller_id=? ORDER BY id DESC LIMIT 80',(c.from_user.id,)).fetchall()
+    kbrows=[[(f'#{p["id"]} • {p["phone"]} • {cash(p["price"])}$ • {p["status"]}', 'my_product:'+str(p['id']))] for p in rows]
+    kbrows.append([('🏠 Главное меню','seller_mode')])
+    await c.message.edit_text('📋 <b>Мои товары</b>' if rows else '📋 У вас пока нет товаров.', reply_markup=ik(kbrows)); await c.answer()
+
+@router.callback_query(F.data.startswith('my_product:'))
+async def my_product(c:CallbackQuery):
+    pid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        p=db.execute('SELECT * FROM products WHERE id=? AND seller_id=?',(pid,c.from_user.id)).fetchone()
+    if not p: return await c.answer('Не найдено', show_alert=True)
+    rows=[]
+    if p['status'] in ('active','moderation'):
+        rows.append([('🗑 Снять с маркета','hide_product:'+str(pid))])
+    rows.append([('⬅️ Мои товары','my_products')])
+    await c.message.edit_text(f'''📋 <b>Товар #{pid}</b>\n\nНомер: <code>{p['phone']}</code>\nЦена: {cash(p['price'])}$\nСтатус: <b>{p['status']}</b>\nОписание:\n{p['description']}''', reply_markup=ik(rows)); await c.answer()
+
+@router.callback_query(F.data.startswith('hide_product:'))
+async def hide_product(c:CallbackQuery):
+    pid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        p=db.execute('SELECT * FROM products WHERE id=? AND seller_id=?',(pid,c.from_user.id)).fetchone()
+        if not p or p['status'] not in ('active','moderation'):
+            return await c.answer('Товар нельзя снять', show_alert=True)
+        db.execute('UPDATE products SET status="hidden" WHERE id=?',(pid,)); db.commit()
+    await c.message.edit_text('✅ Товар снят с маркета.', reply_markup=ik([[('📋 Мои товары','my_products')]])); await c.answer()
+
+@router.callback_query(F.data=='admin_stats')
+async def admin_stats(c:CallbackQuery):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа', show_alert=True)
+    with closing(conn()) as db:
+        q=lambda x: db.execute(x).fetchone()[0] or 0
+        users=q('SELECT COUNT(*) FROM users')
+        sellers=q('SELECT COUNT(*) FROM users WHERE seller=1')
+        banned=q('SELECT COUNT(*) FROM users WHERE COALESCE(banned,0)=1')
+        active=q('SELECT COUNT(*) FROM orders WHERE status IN ("waiting_code","active")')
+        disputes=q('SELECT COUNT(*) FROM orders WHERE status="dispute"')
+        turnover=q('SELECT COALESCE(SUM(price),0) FROM orders WHERE status="closed"')
+        fee=q('SELECT COALESCE(SUM(market_fee),0) FROM orders WHERE status="closed"')
+        deposits=q('SELECT COALESCE(SUM(amount),0) FROM invoices WHERE status="paid"')
+        withdraws=q('SELECT COALESCE(SUM(amount),0) FROM withdraws WHERE status="completed"')
+    await c.message.edit_text(f'''📊 <b>Статистика маркета</b>\n\n👥 Пользователей: <b>{users}</b>\n💼 Продавцов: <b>{sellers}</b>\n⛔️ Забанено: <b>{banned}</b>\n🟢 Активные сделки: <b>{active}</b>\n⚠️ Споры: <b>{disputes}</b>\n💰 Оборот закрытых сделок: <b>{cash(turnover)}$</b>\n🏦 Доход комиссии: <b>{cash(fee)}$</b>\n➕ Пополнения: <b>{cash(deposits)}$</b>\n➖ Выводы: <b>{cash(withdraws)}$</b>''', reply_markup=ik([[('⬅️ Админ-панель','admin_back')]])); await c.answer()
+
+@router.callback_query(F.data=='admin_find_user')
+async def admin_find_user(c:CallbackQuery, state:FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа', show_alert=True)
+    await state.set_state(FindUser.user_id); await c.message.answer('Введите Telegram ID пользователя:'); await c.answer()
+
+@router.message(FindUser.user_id)
+async def admin_user_card(m:Message, state:FSMContext):
+    if not is_admin(m.from_user.id): return
+    try: uid=int((m.text or '').strip())
+    except Exception: return await m.answer('Введите ID числом.')
+    await state.clear(); u=user(uid)
+    if not u: return await m.answer('Пользователь не найден в базе.', reply_markup=admin_kb())
+    with closing(conn()) as db:
+        deals=db.execute('SELECT COUNT(*) FROM orders WHERE buyer_id=? OR seller_id=?',(uid,uid)).fetchone()[0]
+        txs=db.execute('SELECT * FROM transactions WHERE user_id=? ORDER BY id DESC LIMIT 5',(uid,)).fetchall()
+    hist='\n'.join([f"{dtime(t['created_at'])}: {cash(t['amount'])}$ • {t['type']}" for t in txs]) or 'нет операций'
+    await m.answer(f'''👤 <b>Пользователь</b>\n\nID: <code>{u['user_id']}</code>\nИмя: <b>{u['full_name'] or '-'}</b>\nЮзер: @{u['username'] or '-'}\nБаланс: <b>{cash(u['balance'])}$</b>\nЗаморожено: <b>{cash(u['frozen'])}$</b>\nСделок: <b>{deals}</b>\nПродавец: <b>{'да' if u['seller'] else 'нет'}</b>\nБан: <b>{'да' if u['banned'] else 'нет'}</b>\n\n<b>Последние операции:</b>\n{hist}''', reply_markup=ik([[('⛔️ Забанить','ban_user:'+str(uid)),('✅ Разбанить','unban_user:'+str(uid))],[('⬅️ Админ-панель','admin_back')]]))
+
+@router.callback_query(F.data.startswith('ban_user:') | F.data.startswith('unban_user:'))
+async def admin_ban_user(c:CallbackQuery):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа', show_alert=True)
+    uid=int(c.data.split(':')[1]); ban=1 if c.data.startswith('ban_user:') else 0
+    with closing(conn()) as db:
+        db.execute('INSERT OR IGNORE INTO users(user_id,username,full_name,registered_at) VALUES(?,?,?,?)',(uid,'','',ts()))
+        db.execute('UPDATE users SET banned=? WHERE user_id=?',(ban,uid)); db.commit()
+    await c.message.edit_text(('⛔️ Пользователь забанен.' if ban else '✅ Пользователь разбанен.'), reply_markup=ik([[('⬅️ Админ-панель','admin_back')]])); await c.answer('Готово')
+
+@router.callback_query(F.data=='admin_export_db')
+async def admin_export_db(c:CallbackQuery):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа', show_alert=True)
+    if not os.path.exists(DB_PATH): return await c.answer('БД еще не создана', show_alert=True)
+    await c.message.answer_document(FSInputFile(DB_PATH, filename=f'diamond_market_backup_{int(time.time())}.db'), caption='📤 Полная выгрузка БД. Внутри всё: пользователи, товары, сделки, балансы, настройки.')
+    await c.answer()
+
+@router.callback_query(F.data=='admin_import_db')
+async def admin_import_db(c:CallbackQuery, state:FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа', show_alert=True)
+    await state.set_state(ImportDB.file)
+    await c.message.answer('📥 Отправьте файл базы <code>.db</code>. Бот проверит файл и поднимет его без перезапуска.')
+    await c.answer()
+
+@router.message(ImportDB.file)
+async def admin_import_db_file(m:Message, state:FSMContext):
+    if not is_admin(m.from_user.id): return
+    if not m.document: return await m.answer('Отправьте именно файл .db документом.')
+    if not (m.document.file_name or '').endswith('.db'):
+        return await m.answer('Файл должен быть с расширением .db')
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db'); tmp.close()
+    try:
+        await m.bot.download(m.document, destination=tmp.name)
+        test=sqlite3.connect(tmp.name)
+        tables={r[0] for r in test.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        test.close()
+        if not all(x in tables for x in ['users','products','orders','settings']):
+            os.remove(tmp.name); return await m.answer('❌ Это не база Diamond Market: нет нужных таблиц.')
+        backup = DB_PATH + '.before_import'
+        if os.path.exists(DB_PATH): shutil.copy2(DB_PATH, backup)
+        shutil.copy2(tmp.name, DB_PATH)
+        init_db()
+        await state.clear()
+        await m.answer(f'✅ БД загружена и поднята без перезапуска. Резерв старой БД: <code>{backup}</code>', reply_markup=admin_kb())
+    except Exception as e:
+        await m.answer(f'❌ Ошибка загрузки БД:\n<code>{str(e)[:700]}</code>')
+    finally:
+        try: os.remove(tmp.name)
+        except Exception: pass
+
+@router.message(Command('db_export'))
+async def db_export_cmd(m:Message):
+    if not is_admin(m.from_user.id): return await m.answer('⛔️ Нет доступа')
+    if not os.path.exists(DB_PATH): return await m.answer('БД еще не создана')
+    await m.answer_document(FSInputFile(DB_PATH, filename=f'diamond_market_backup_{int(time.time())}.db'), caption='📤 Полная выгрузка БД')
+
+@router.message(Command('db_import'))
+async def db_import_cmd(m:Message, state:FSMContext):
+    if not is_admin(m.from_user.id): return await m.answer('⛔️ Нет доступа')
+    await state.set_state(ImportDB.file); await m.answer('📥 Отправьте файл .db документом.')
+
+@router.callback_query(F.data=='admin_set_market_fee')
+async def admin_set_market_fee(c:CallbackQuery, state:FSMContext):
+    if not is_admin(c.from_user.id): return await c.answer('Нет доступа', show_alert=True)
+    await state.set_state(SetMarketFee.amount); await c.message.answer('Введите комиссию с продаж в процентах. Например: <code>5</code>'); await c.answer()
+
+@router.message(SetMarketFee.amount)
+async def admin_save_market_fee(m:Message, state:FSMContext):
+    if not is_admin(m.from_user.id): return
+    try:
+        amount=float((m.text or '').replace(',','.'))
+        if amount < 0 or amount > 50: raise ValueError
+    except Exception:
+        return await m.answer('Введите число от 0 до 50.')
+    set_setting('market_fee_percent', str(amount)); await state.clear()
+    await m.answer(f'✅ Комиссия с продаж изменена на <b>{cash(amount)}%</b>.', reply_markup=admin_kb())
 
 # Mini App secure auth
 
@@ -656,7 +896,7 @@ HTML = r'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name
 const tg=window.Telegram?.WebApp; tg?.expand(); tg?.setHeaderColor('#050505'); tg?.setBackgroundColor('#050505');
 function toast(t){let x=document.getElementById('toast');x.textContent=t;x.style.display='block';setTimeout(()=>x.style.display='none',2600)}
 async function api(path,body){let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,initData:tg?.initData||''})});return await r.json()}
-async function load(){let r=await fetch('/api/products?initData='+encodeURIComponent(tg?.initData||''));let d=await r.json();document.getElementById('cnt').textContent='Товаров: '+d.items.length;document.getElementById('bal').textContent='Баланс: '+(d.balance??'—')+'$';let list=document.getElementById('list');list.innerHTML='';if(!d.items.length){list.innerHTML='<div class="empty">Пока нет активных товаров</div>';return}d.items.forEach(p=>{let el=document.createElement('div');el.className='card';el.innerHTML=`<div class="row"><div><div class="phone">📱 ${p.phone}</div><div class="muted">Продавец: ${p.seller}</div></div><div class="price">${p.price}$</div></div><div class="desc">${p.description}</div><button class="btn">Купить</button>`;el.querySelector('button').onclick=async()=>{let res=await api('/api/buy',{product_id:p.id});toast(res.message||'Готово');if(res.ok) setTimeout(load,800)};list.appendChild(el)})}
+async function load(){let r=await fetch('/api/products?initData='+encodeURIComponent(tg?.initData||''));let d=await r.json();document.getElementById('cnt').textContent='Товаров: '+d.items.length;document.getElementById('bal').textContent='Баланс: '+(d.balance??'—')+'$';let list=document.getElementById('list');list.innerHTML='';if(!d.items.length){list.innerHTML='<div class="empty">Пока нет активных товаров</div>';return}d.items.forEach(p=>{let el=document.createElement('div');el.className='card';el.innerHTML=`<div class="row"><div><div class="phone">📱 ${p.phone}</div><div class="muted">Продавец: ${p.seller}</div><div class="muted">Сделок: ${p.deals} • ${p.rating}</div></div><div class="price">${p.price}$</div></div><div class="desc">${p.description}</div><button class="btn">Купить</button>`;el.querySelector('button').onclick=async()=>{let res=await api('/api/buy',{product_id:p.id});toast(res.message||'Готово');if(res.ok) setTimeout(load,800)};list.appendChild(el)})}
 load();
 </script></body></html>'''
 
@@ -669,7 +909,13 @@ async def api_products(request):
         uid=u.get('id'); row=user(uid); balance=cash(row['balance']) if row else '0'
     with closing(conn()) as db:
         rows=db.execute('SELECT p.*,u.full_name,u.username FROM products p JOIN users u ON u.user_id=p.seller_id WHERE p.status="active" ORDER BY p.id DESC').fetchall()
-    return web.json_response({'items':[{'id':r['id'],'phone':r['phone'],'price':cash(r['price']),'description':r['description'],'seller':r['full_name'] or r['username'] or str(r['seller_id'])} for r in rows], 'balance': balance})
+    items=[]
+    with closing(conn()) as db2:
+        for r in rows:
+            rev=db2.execute('SELECT COALESCE(SUM(CASE WHEN rating>0 THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN rating<0 THEN 1 ELSE 0 END),0) FROM reviews WHERE seller_id=?',(r['seller_id'],)).fetchone()
+            deals=db2.execute('SELECT COUNT(*) FROM orders WHERE seller_id=? AND status="closed"',(r['seller_id'],)).fetchone()[0]
+            items.append({'id':r['id'],'phone':r['phone'],'price':cash(r['price']),'description':r['description'],'seller':r['full_name'] or r['username'] or str(r['seller_id']),'rating':f'👍{rev[0]} / 👎{rev[1]}','deals':deals})
+    return web.json_response({'items':items, 'balance': balance})
 async def api_buy(request):
     bot=request.app['bot']; data=await request.json(); u=validate_init_data(data.get('initData',''))
     if not u: return web.json_response({'ok':False,'message':'Открой Mini App из Telegram-бота'})
@@ -678,11 +924,16 @@ async def api_buy(request):
     with closing(conn()) as db:
         p=db.execute('SELECT * FROM products WHERE id=? AND status="active"',(pid,)).fetchone(); usr=db.execute('SELECT * FROM users WHERE user_id=?',(uid,)).fetchone()
         if not p: return web.json_response({'ok':False,'message':'Товар уже недоступен'})
+        if usr and usr['banned']: return web.json_response({'ok':False,'message':'Вы заблокированы в маркете'})
         if float(usr['balance'])<float(p['price']): return web.json_response({'ok':False,'message':'Недостаточно средств'})
         db.execute('UPDATE users SET balance=balance-?, frozen=frozen+?, deals_count=deals_count+1 WHERE user_id=?',(p['price'],p['price'],uid))
         db.execute('UPDATE products SET status="sold" WHERE id=?',(pid,))
-        cur=db.execute('INSERT INTO orders(buyer_id,seller_id,product_id,phone,price,description,status,created_at) VALUES(?,?,?,?,?,?,?,?)',(uid,p['seller_id'],pid,p['phone'],p['price'],p['description'],'waiting_code',ts()))
-        oid=cur.lastrowid; db.commit()
+        fee = round(float(p['price']) * market_fee_percent() / 100, 4)
+        seller_receive = round(float(p['price']) - fee, 4)
+        cur=db.execute('INSERT INTO orders(buyer_id,seller_id,product_id,phone,price,description,status,created_at,market_fee,seller_receive) VALUES(?,?,?,?,?,?,?,?,?,?)',(uid,p['seller_id'],pid,p['phone'],p['price'],p['description'],'waiting_code',ts(),fee,seller_receive))
+        oid=cur.lastrowid
+        add_tx(db, uid, -float(p['price']), 'purchase_hold', f'Покупка #{oid} через Mini App', 'order', oid)
+        db.commit()
     await bot.send_message(uid, f'✅ Покупка создана через Mini App. Заказ №{oid}. Ожидаем код сделки от продавца.', reply_markup=ik([[('📦 Покупки','purchases')]]))
     await bot.send_message(p['seller_id'], f'🆕 У вас купили товар через Mini App\nЗаказ №{oid}\nНомер: <code>{p["phone"]}</code>\nСумма: {cash(p["price"])}$\nОтправьте внутренний код сделки: 6 цифр.', reply_markup=ik([[('🔢 Отправить код','seller_send_code:'+str(oid))]]))
     return web.json_response({'ok':True,'message':'Покупка создана. Проверьте бота.'})
