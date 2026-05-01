@@ -175,7 +175,6 @@ async def create_crypto_transfer(user_id: int, amount: float):
         'asset': CRYPTO_ASSET,
         'amount': str(amount),
         'spend_id': f'withdraw:{user_id}:{int(time.time())}:{amount}',
-        'comment': 'Diamond Market withdraw',
     })
     return result
 
