@@ -55,6 +55,18 @@ def cash(x):
     except: return str(x)
 def is_admin(uid:int): return uid in ADMIN_IDS
 
+async def is_staff(bot: Bot, uid: int) -> bool:
+    if is_admin(uid):
+        return True
+    if not ADMIN_GROUP_ID:
+        return False
+    try:
+        member = await bot.get_chat_member(ADMIN_GROUP_ID, uid)
+        status = str(member.status).lower()
+        return 'administrator' in status or 'creator' in status
+    except Exception:
+        return False
+
 def norm_phone(s:str):
     s = (s or '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
     if not PHONE_RE.match(s): return None
@@ -104,6 +116,10 @@ def init_db():
             'ALTER TABLE users ADD COLUMN market_fee_earned REAL DEFAULT 0',
             'ALTER TABLE orders ADD COLUMN market_fee REAL DEFAULT 0',
             'ALTER TABLE orders ADD COLUMN seller_receive REAL DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN dispute_opened_at INTEGER',
+            'ALTER TABLE orders ADD COLUMN arbitration_link TEXT',
+            'ALTER TABLE orders ADD COLUMN arbitration_sent_at INTEGER',
+            'ALTER TABLE orders ADD COLUMN dispute_decision TEXT',
         ]:
             try:
                 db.execute(sql)
@@ -198,6 +214,7 @@ class FindUser(StatesGroup): user_id=State()
 class ImportDB(StatesGroup): file=State()
 class Deposit(StatesGroup): amount=State()
 class Withdraw(StatesGroup): amount=State(); details=State()
+class DisputeAdmin(StatesGroup): link=State(); refund=State()
 
 async def crypto_call(method: str, payload: dict):
     if not CRYPTO_PAY_TOKEN:
@@ -376,13 +393,142 @@ async def dispute(c:CallbackQuery):
     oid=int(c.data.split(':')[1])
     with closing(conn()) as db:
         o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=?',(oid,c.from_user.id)).fetchone()
-        if not o or o['status'] not in ('active','waiting_code'): return await c.answer('Спор нельзя открыть', show_alert=True)
-        db.execute('UPDATE orders SET status="dispute" WHERE id=?',(oid,)); db.execute('UPDATE users SET disputes=disputes+1 WHERE user_id=?',(o['seller_id'],)); db.commit()
-    text=f'⚠️ <b>Открыт спор</b>\n\nЗаказ №{oid}\nПокупатель: {link(c.from_user)} / <code>{c.from_user.id}</code>\nПродавец: <code>{o["seller_id"]}</code>\nНомер: <code>{o["phone"]}</code>\nСумма: {cash(o["price"])}$'
-    if ADMIN_GROUP_ID: await c.bot.send_message(ADMIN_GROUP_ID,text)
+        if not o or o['status'] not in ('active','waiting_code'):
+            return await c.answer('Спор нельзя открыть', show_alert=True)
+        seller=db.execute('SELECT * FROM users WHERE user_id=?',(o['seller_id'],)).fetchone()
+        db.execute('UPDATE orders SET status="dispute", dispute_opened_at=? WHERE id=?',(ts(),oid))
+        db.execute('UPDATE users SET disputes=disputes+1 WHERE user_id=?',(o['seller_id'],))
+        db.commit()
+    text=(
+        f'⚠️ <b>Открыт спор</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Покупатель: {link(c.from_user)} / <code>{c.from_user.id}</code>\n'
+        f'Продавец: {link(seller) if seller else o["seller_id"]} / <code>{o["seller_id"]}</code>\n\n'
+        f'Номер: <code>{o["phone"]}</code>\n'
+        f'Сумма: <b>{cash(o["price"])}$</b>\n'
+        f'Описание:\n{o["description"] or "-"}\n\n'
+        f'Нажмите «Отправить ссылку», когда создадите группу арбитража.'
+    )
+    admin_markup=ik([
+        [('🔗 Отправить ссылку', 'dispute_link:'+str(oid))],
+        [('✅ Закрыть в пользу продавца', 'dispute_seller:'+str(oid))],
+        [('↩️ Возврат покупателю', 'dispute_buyer:'+str(oid))]
+    ])
+    if ADMIN_GROUP_ID:
+        await c.bot.send_message(ADMIN_GROUP_ID, text, reply_markup=admin_markup)
     else:
-        for aid in ADMIN_IDS: await c.bot.send_message(aid,text)
-    await c.message.edit_text('⚠️ Спор открыт. Администрация получила уведомление.', reply_markup=ik([[('📦 Покупки','purchases')]])); await c.answer()
+        for aid in ADMIN_IDS:
+            await c.bot.send_message(aid, text, reply_markup=admin_markup)
+    await c.message.edit_text('⚠️ <b>Спор открыт</b>\n\nАдминистрация получила уведомление. Ожидайте ссылку на арбитраж.', reply_markup=ik([[('📦 Покупки','purchases')]])); await c.answer()
+
+@router.callback_query(F.data.startswith('dispute_link:'))
+async def dispute_link_start(c:CallbackQuery, state:FSMContext):
+    if not await is_staff(c.bot, c.from_user.id):
+        return await c.answer('Нет доступа', show_alert=True)
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND status="dispute"',(oid,)).fetchone()
+    if not o:
+        return await c.answer('Спор не найден или уже закрыт', show_alert=True)
+    await state.set_state(DisputeAdmin.link)
+    await state.update_data(order_id=oid)
+    await c.message.answer('🔗 Отправьте ссылку на группу <b>Арбитраж</b>.\n\nНапример: <code>https://t.me/+xxxx</code>')
+    await c.answer()
+
+@router.message(DisputeAdmin.link)
+async def dispute_link_save(m:Message, state:FSMContext):
+    if not await is_staff(m.bot, m.from_user.id):
+        return
+    url=(m.text or '').strip()
+    if not (url.startswith('https://') or url.startswith('http://') or url.startswith('t.me/')):
+        return await m.answer('❌ Отправьте нормальную ссылку. Пример: <code>https://t.me/+xxxx</code>')
+    if url.startswith('t.me/'):
+        url='https://'+url
+    data=await state.get_data(); oid=int(data['order_id'])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND status="dispute"',(oid,)).fetchone()
+        if not o:
+            await state.clear(); return await m.answer('Спор не найден или уже закрыт.')
+        db.execute('UPDATE orders SET arbitration_link=?, arbitration_sent_at=? WHERE id=?',(url,ts(),oid))
+        db.commit()
+    markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🚪 Войти в арбитраж', url=url)]])
+    note=(
+        f'⚖️ <b>Арбитраж по сделке №{oid}</b>\n\n'
+        f'Вас пригласили в чат «Арбитраж». Зайдите, чтобы решить проблему с администрацией бота.\n\n'
+        f'Если в течение 6 часов кто-то не зайдет, сделка может быть закрыта администрацией без апелляции.'
+    )
+    await m.bot.send_message(o['buyer_id'], note, reply_markup=markup)
+    await m.bot.send_message(o['seller_id'], note, reply_markup=markup)
+    await state.clear()
+    await m.answer('✅ Ссылка отправлена покупателю и продавцу.')
+
+@router.callback_query(F.data.startswith('dispute_seller:'))
+async def dispute_resolve_seller(c:CallbackQuery):
+    if not await is_staff(c.bot, c.from_user.id):
+        return await c.answer('Нет доступа', show_alert=True)
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND status="dispute"',(oid,)).fetchone()
+        if not o:
+            return await c.answer('Спор не найден или уже закрыт', show_alert=True)
+        fee=float(o['market_fee'] or round(float(o['price']) * market_fee_percent() / 100, 4))
+        seller_receive=float(o['seller_receive'] or (float(o['price']) - fee))
+        db.execute('UPDATE orders SET status="closed", closed_at=?, market_fee=?, seller_receive=?, dispute_decision="seller" WHERE id=?',(ts(),fee,seller_receive,oid))
+        db.execute('UPDATE users SET frozen=frozen-?, market_fee_earned=COALESCE(market_fee_earned,0)+? WHERE user_id=?',(o['price'],fee,o['buyer_id']))
+        db.execute('UPDATE users SET balance=balance+?, earned=earned+?, sold_count=sold_count+1, deals_count=deals_count+1 WHERE user_id=?',(seller_receive,seller_receive,o['seller_id']))
+        add_tx(db, o['seller_id'], seller_receive, 'dispute_seller_win', f'Спор #{oid} закрыт в пользу продавца', 'order', oid)
+        add_tx(db, o['buyer_id'], -float(o['price']), 'dispute_lost', f'Спор #{oid} закрыт в пользу продавца', 'order', oid)
+        db.commit()
+    await c.message.edit_text(f'✅ Спор №{oid} закрыт в пользу продавца.\nПродавцу зачислено: <b>{cash(seller_receive)}$</b>')
+    await c.bot.send_message(o['buyer_id'], f'⚖️ Спор по сделке №{oid} закрыт в пользу продавца.')
+    await c.bot.send_message(o['seller_id'], f'⚖️ Спор по сделке №{oid} закрыт в вашу пользу. Зачислено {cash(seller_receive)}$')
+    await c.answer()
+
+@router.callback_query(F.data.startswith('dispute_buyer:'))
+async def dispute_resolve_buyer_start(c:CallbackQuery, state:FSMContext):
+    if not await is_staff(c.bot, c.from_user.id):
+        return await c.answer('Нет доступа', show_alert=True)
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND status="dispute"',(oid,)).fetchone()
+    if not o:
+        return await c.answer('Спор не найден или уже закрыт', show_alert=True)
+    await state.set_state(DisputeAdmin.refund)
+    await state.update_data(order_id=oid)
+    await c.message.answer(f'↩️ Введите сумму возврата покупателю по спору №{oid}.\nМаксимум: <code>{cash(o["price"])}$</code>')
+    await c.answer()
+
+@router.message(DisputeAdmin.refund)
+async def dispute_resolve_buyer_finish(m:Message, state:FSMContext):
+    if not await is_staff(m.bot, m.from_user.id):
+        return
+    try:
+        refund=float((m.text or '').replace(',','.'))
+        if refund < 0: raise ValueError
+    except Exception:
+        return await m.answer('Введите сумму числом. Например: <code>1.5</code>')
+    data=await state.get_data(); oid=int(data['order_id'])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND status="dispute"',(oid,)).fetchone()
+        if not o:
+            await state.clear(); return await m.answer('Спор не найден или уже закрыт.')
+        price=float(o['price'])
+        refund=min(refund, price)
+        seller_gross=max(price-refund, 0)
+        fee=round(seller_gross * market_fee_percent() / 100, 4)
+        seller_receive=round(seller_gross - fee, 4)
+        db.execute('UPDATE orders SET status="closed", closed_at=?, market_fee=?, seller_receive=?, dispute_decision="buyer" WHERE id=?',(ts(),fee,seller_receive,oid))
+        db.execute('UPDATE users SET frozen=frozen-?, balance=balance+?, market_fee_earned=COALESCE(market_fee_earned,0)+? WHERE user_id=?',(price,refund,fee,o['buyer_id']))
+        if seller_receive > 0:
+            db.execute('UPDATE users SET balance=balance+?, earned=earned+?, sold_count=sold_count+1, deals_count=deals_count+1 WHERE user_id=?',(seller_receive,seller_receive,o['seller_id']))
+        add_tx(db, o['buyer_id'], refund, 'dispute_refund', f'Возврат по спору #{oid}', 'order', oid)
+        if seller_receive > 0:
+            add_tx(db, o['seller_id'], seller_receive, 'dispute_partial_income', f'Доход по спору #{oid}, комиссия {cash(fee)}$', 'order', oid)
+        db.commit()
+    await state.clear()
+    await m.answer(f'✅ Спор №{oid} закрыт. Покупателю возвращено <b>{cash(refund)}$</b>.')
+    await m.bot.send_message(o['buyer_id'], f'⚖️ Спор по сделке №{oid} закрыт. Вам возвращено {cash(refund)}$.')
+    await m.bot.send_message(o['seller_id'], f'⚖️ Спор по сделке №{oid} закрыт. Решение администрации принято.')
 
 @router.callback_query(F.data=='profile')
 async def profile(c:CallbackQuery):
