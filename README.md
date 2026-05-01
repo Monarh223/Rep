@@ -1,36 +1,29 @@
-# Diamond Market Bot + Mini App
+# Diamond Market Bot v2
 
-Одна архитектура без папок. Все в корне репозитория.
+Одна архитектура без папок.
 
-## Railway Variables
+- Telegram bot + Mini App в `main.py`
+- Mini App с анимациями
+- Покупка прямо в Mini App
+- Админ-панель `/admin`
+- Добавление баланса пользователю
+- Загрузка только товара типа “номер”
+- Проверка формата номера
+- После покупки продавец отправляет внутренний код сделки — 6 цифр
+- Покупатель получает номер + код и кнопки подтверждения / спора
+
+Railway Variables минимум:
 
 ```env
 BOT_TOKEN=токен_бота
-ADMIN_IDS=твой_id,второй_id
-ADMIN_GROUP_ID=-100xxxxxxxxxx
-WEBAPP_URL=https://твой-проект.up.railway.app
-CRYPTO_PAY_TOKEN=токен_CryptoBot_CryptoPay
-CRYPTO_ASSET=USDT
-DB_PATH=/data/market.db
+ADMIN_IDS=твой_telegram_id
+DB_PATH=market.db
 ```
 
-## Запуск
+Для Mini App:
 
-1. Загрузи файлы в GitHub в корень репозитория.
-2. Railway → New Project → Deploy from GitHub.
-3. Добавь Variables.
-4. Для сохранения базы подключи Railway Volume на `/data` и поставь `DB_PATH=/data/market.db`.
+```env
+WEBAPP_URL=https://твой-проект.up.railway.app
+```
 
-## Есть
-
-- Маркет / Покупки / Профиль / Режим продавца.
-- Категории Фиш и Саморег.
-- Заявки продавцов через админ-группу.
-- Модерация товаров.
-- Покупка с заморозкой баланса.
-- Покупки и продажи.
-- Закрытие сделки.
-- Споры и арбитраж.
-- Решение спора админом.
-- Пополнение и вывод через CryptoBot API.
-- Mini App сайт внутри `main.py`.
+Реальный токен добавляй только в Railway Variables, не в GitHub.
