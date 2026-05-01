@@ -412,7 +412,8 @@ async def dispute(c:CallbackQuery):
     admin_markup=ik([
         [('🔗 Отправить ссылку', 'dispute_link:'+str(oid))],
         [('✅ Закрыть в пользу продавца', 'dispute_seller:'+str(oid))],
-        [('↩️ Возврат покупателю', 'dispute_buyer:'+str(oid))]
+        [('✅ Закрыть в пользу покупателя', 'dispute_buyer_full:'+str(oid))],
+        [('↩️ Частичный возврат покупателю', 'dispute_buyer:'+str(oid))]
     ])
     if ADMIN_GROUP_ID:
         await c.bot.send_message(ADMIN_GROUP_ID, text, reply_markup=admin_markup)
@@ -482,6 +483,26 @@ async def dispute_resolve_seller(c:CallbackQuery):
     await c.message.edit_text(f'✅ Спор №{oid} закрыт в пользу продавца.\nПродавцу зачислено: <b>{cash(seller_receive)}$</b>')
     await c.bot.send_message(o['buyer_id'], f'⚖️ Спор по сделке №{oid} закрыт в пользу продавца.')
     await c.bot.send_message(o['seller_id'], f'⚖️ Спор по сделке №{oid} закрыт в вашу пользу. Зачислено {cash(seller_receive)}$')
+    await c.answer()
+
+@router.callback_query(F.data.startswith('dispute_buyer_full:'))
+async def dispute_resolve_buyer_full(c:CallbackQuery):
+    if not await is_staff(c.bot, c.from_user.id):
+        return await c.answer('Нет доступа', show_alert=True)
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND status="dispute"',(oid,)).fetchone()
+        if not o:
+            return await c.answer('Спор не найден или уже закрыт', show_alert=True)
+        refund=float(o['price'])
+        db.execute('UPDATE orders SET status="closed", closed_at=?, market_fee=0, seller_receive=0, dispute_decision="buyer" WHERE id=?',(ts(),oid))
+        db.execute('UPDATE users SET frozen=frozen-?, balance=balance+? WHERE user_id=?',(refund,refund,o['buyer_id']))
+        add_tx(db, o['buyer_id'], refund, 'dispute_buyer_win', f'Спор #{oid} закрыт в пользу покупателя', 'order', oid)
+        add_tx(db, o['seller_id'], 0, 'dispute_seller_lost', f'Спор #{oid} закрыт в пользу покупателя', 'order', oid)
+        db.commit()
+    await c.message.edit_text(f'✅ Спор №{oid} закрыт в пользу покупателя.\nПокупателю возвращено: <b>{cash(refund)}$</b>')
+    await c.bot.send_message(o['buyer_id'], f'⚖️ Спор по сделке №{oid} закрыт в вашу пользу. На баланс возвращено {cash(refund)}$.')
+    await c.bot.send_message(o['seller_id'], f'⚖️ Спор по сделке №{oid} закрыт в пользу покупателя. Средства продавцу не зачислены.')
     await c.answer()
 
 @router.callback_query(F.data.startswith('dispute_buyer:'))
