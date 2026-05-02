@@ -120,6 +120,9 @@ def init_db():
             'ALTER TABLE orders ADD COLUMN arbitration_link TEXT',
             'ALTER TABLE orders ADD COLUMN arbitration_sent_at INTEGER',
             'ALTER TABLE orders ADD COLUMN dispute_decision TEXT',
+            'ALTER TABLE orders ADD COLUMN code_requested_at INTEGER',
+            'ALTER TABLE orders ADD COLUMN repeat_count INTEGER DEFAULT 0',
+            'ALTER TABLE orders ADD COLUMN dispute_by INTEGER',
         ]:
             try:
                 db.execute(sql)
@@ -329,15 +332,84 @@ async def buy_confirm(c:CallbackQuery):
         oid=cur.lastrowid
         add_tx(db, c.from_user.id, -float(p['price']), 'purchase_hold', f'Покупка #{oid}, деньги заморожены', 'order', oid)
         db.commit()
-    await c.message.edit_text(f'✅ <b>Покупка создана</b>\n\nЗаказ №{oid}\nДеньги заморожены гарантом. Ожидаем код сделки от продавца.', reply_markup=ik([[('📦 Покупки','purchases')]]))
-    await c.bot.send_message(p['seller_id'], f'🆕 <b>У вас купили товар</b>\n\nЗаказ №{oid}\nНомер: <code>{p["phone"]}</code>\nСумма: {cash(p["price"])}$\n\nОтправьте внутренний код сделки: 6 цифр.', reply_markup=ik([[('🔢 Отправить код','seller_send_code:'+str(oid))]]))
+    await c.message.edit_text(
+        f'✅ <b>Покупка создана</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Номер: <code>{p["phone"]}</code>\n'
+        f'Сумма: <b>{cash(p["price"])}$</b>\n\n'
+        f'Деньги заморожены гарантом.\n'
+        f'Чтобы получить код, нажмите кнопку ниже.',
+        reply_markup=ik([[('📨 Отправить код','buyer_request_code:'+str(oid))],[('📦 Покупки','purchases')]])
+    )
+    await c.bot.send_message(
+        p['seller_id'],
+        f'🆕 <b>У вас купили товар</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Номер: <code>{p["phone"]}</code>\n'
+        f'Сумма: <b>{cash(p["price"])}$</b>\n\n'
+        f'Покупатель должен нажать «Отправить код». После этого бот запросит у вас 6-значный код сделки.'
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith('buyer_request_code:'))
+async def buyer_request_code(c:CallbackQuery):
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=?',(oid,c.from_user.id)).fetchone()
+        if not o or o['status'] not in ('waiting_code','code_requested'):
+            return await c.answer('По этой сделке уже нельзя запросить код', show_alert=True)
+        db.execute('UPDATE orders SET status="code_requested", code_requested_at=? WHERE id=?',(ts(),oid))
+        db.commit()
+    await c.message.edit_text(
+        f'📨 <b>Запрос кода отправлен продавцу</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Номер: <code>{o["phone"]}</code>\n\n'
+        f'Ожидайте, продавец должен ввести внутренний 6-значный код сделки.',
+        reply_markup=ik([[('📦 Покупки','purchases')]])
+    )
+    await c.bot.send_message(
+        o['seller_id'],
+        f'📨 <b>Покупатель запросил код</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Номер: <code>{o["phone"]}</code>\n'
+        f'Сумма: <b>{cash(o["price"])}$</b>\n\n'
+        f'Введите внутренний код сделки: 6 цифр.',
+        reply_markup=ik([[('🔢 Ввести код','seller_send_code:'+str(oid))]])
+    )
+    await c.answer()
+
+@router.callback_query(F.data.startswith('repeat_code:'))
+async def repeat_code(c:CallbackQuery):
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=?',(oid,c.from_user.id)).fetchone()
+        if not o or o['status']!='active':
+            return await c.answer('Повтор сейчас недоступен', show_alert=True)
+        db.execute('UPDATE orders SET status="repeat_requested", repeat_count=COALESCE(repeat_count,0)+1 WHERE id=?',(oid,))
+        db.commit()
+    await c.message.edit_text(
+        f'🔂 <b>Повтор кода запрошен</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Продавец получил уведомление и должен выдать повтор кода.',
+        reply_markup=ik([[('⚠️ Оспорить','dispute:'+str(oid))],[('📦 Покупки','purchases')]])
+    )
+    await c.bot.send_message(
+        o['seller_id'],
+        f'🔂 <b>Покупатель запросил повтор кода</b>\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Номер: <code>{o["phone"]}</code>\n\n'
+        f'Введите новый 6-значный код или откройте спор, если считаете, что аккаунт уже забрали/отвязали сессию.',
+        reply_markup=ik([[('🔢 Ввести повтор','seller_send_code:'+str(oid))],[('⚠️ Оспорить','seller_dispute:'+str(oid))]])
+    )
     await c.answer()
 
 @router.callback_query(F.data.startswith('seller_send_code:'))
 async def seller_send_code(c:CallbackQuery, state:FSMContext):
     oid=int(c.data.split(':')[1])
     with closing(conn()) as db: o=db.execute('SELECT * FROM orders WHERE id=? AND seller_id=?',(oid,c.from_user.id)).fetchone()
-    if not o or o['status']!='waiting_code': return await c.answer('Код уже отправлен или заказ не найден', show_alert=True)
+    if not o or o['status'] not in ('code_requested','repeat_requested','waiting_code'):
+        return await c.answer('Код сейчас нельзя отправить или заказ не найден', show_alert=True)
     await state.set_state(CodeState.code); await state.update_data(order_id=oid)
     await c.message.answer('Введите внутренний код сделки. Ровно 6 цифр:'); await c.answer()
 
@@ -366,7 +438,12 @@ async def order_view(c:CallbackQuery):
     with closing(conn()) as db: o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=?',(oid,c.from_user.id)).fetchone()
     if not o: return await c.answer('Не найдено', show_alert=True)
     buttons=[]
-    if o['status']=='active': buttons.append([('✅ Подтвердить','confirm_order:'+str(oid)),('⚠️ Спор','dispute:'+str(oid))])
+    if o['status']=='waiting_code': buttons.append([('📨 Отправить код','buyer_request_code:'+str(oid))])
+    if o['status']=='active':
+        buttons.append([('✅ Подтвердить','confirm_order:'+str(oid))])
+        buttons.append([('🔂 Повтор','repeat_code:'+str(oid))])
+        buttons.append([('⚠️ Оспорить','dispute:'+str(oid))])
+    if o['status']=='repeat_requested': buttons.append([('⚠️ Оспорить','dispute:'+str(oid))])
     buttons.append([('⬅️ Покупки','purchases')])
     await c.message.edit_text(f'''📦 <b>Заказ №{oid}</b>\n\nНомер: <code>{o['phone']}</code>\nЦена: {cash(o['price'])}$\nКод сделки: <code>{o['deal_code'] or 'ожидается'}</code>\nСтатус: <b>{o['status']}</b>''', reply_markup=ik(buttons)); await c.answer()
 
@@ -393,10 +470,10 @@ async def dispute(c:CallbackQuery):
     oid=int(c.data.split(':')[1])
     with closing(conn()) as db:
         o=db.execute('SELECT * FROM orders WHERE id=? AND buyer_id=?',(oid,c.from_user.id)).fetchone()
-        if not o or o['status'] not in ('active','waiting_code'):
+        if not o or o['status'] not in ('active','waiting_code','code_requested','repeat_requested'):
             return await c.answer('Спор нельзя открыть', show_alert=True)
         seller=db.execute('SELECT * FROM users WHERE user_id=?',(o['seller_id'],)).fetchone()
-        db.execute('UPDATE orders SET status="dispute", dispute_opened_at=? WHERE id=?',(ts(),oid))
+        db.execute('UPDATE orders SET status="dispute", dispute_opened_at=?, dispute_by=? WHERE id=?',(ts(),c.from_user.id,oid))
         db.execute('UPDATE users SET disputes=disputes+1 WHERE user_id=?',(o['seller_id'],))
         db.commit()
     text=(
@@ -421,6 +498,45 @@ async def dispute(c:CallbackQuery):
         for aid in ADMIN_IDS:
             await c.bot.send_message(aid, text, reply_markup=admin_markup)
     await c.message.edit_text('⚠️ <b>Спор открыт</b>\n\nАдминистрация получила уведомление. Ожидайте ссылку на арбитраж.', reply_markup=ik([[('📦 Покупки','purchases')]])); await c.answer()
+
+
+@router.callback_query(F.data.startswith('seller_dispute:'))
+async def seller_dispute(c:CallbackQuery):
+    oid=int(c.data.split(':')[1])
+    with closing(conn()) as db:
+        o=db.execute('SELECT * FROM orders WHERE id=? AND seller_id=?',(oid,c.from_user.id)).fetchone()
+        if not o or o['status'] not in ('active','repeat_requested','code_requested'):
+            return await c.answer('Спор нельзя открыть', show_alert=True)
+        buyer=db.execute('SELECT * FROM users WHERE user_id=?',(o['buyer_id'],)).fetchone()
+        db.execute('UPDATE orders SET status="dispute", dispute_opened_at=?, dispute_by=? WHERE id=?',(ts(),c.from_user.id,oid))
+        db.execute('UPDATE users SET disputes=disputes+1 WHERE user_id=?',(o['seller_id'],))
+        db.commit()
+    text=(
+        f'⚠️ <b>Открыт спор</b>\n\n'
+        f'Кто открыл спор: продавец\n'
+        f'Причина: продавец считает, что после повтора аккаунт/товар уже забрали или отвязали сессию.\n\n'
+        f'Заказ №<b>{oid}</b>\n'
+        f'Покупатель: {link(buyer) if buyer else o["buyer_id"]} / <code>{o["buyer_id"]}</code>\n'
+        f'Продавец: {link(c.from_user)} / <code>{c.from_user.id}</code>\n\n'
+        f'Номер: <code>{o["phone"]}</code>\n'
+        f'Сумма: <b>{cash(o["price"])}$</b>\n'
+        f'Описание:\n{o["description"] or "-"}\n\n'
+        f'Нажмите «Отправить ссылку», когда создадите группу арбитража.'
+    )
+    admin_markup=ik([
+        [('🔗 Отправить ссылку', 'dispute_link:'+str(oid))],
+        [('✅ Закрыть в пользу продавца', 'dispute_seller:'+str(oid))],
+        [('✅ Закрыть в пользу покупателя', 'dispute_buyer_full:'+str(oid))],
+        [('↩️ Частичный возврат покупателю', 'dispute_buyer:'+str(oid))]
+    ])
+    if ADMIN_GROUP_ID:
+        await c.bot.send_message(ADMIN_GROUP_ID, text, reply_markup=admin_markup)
+    else:
+        for aid in ADMIN_IDS:
+            await c.bot.send_message(aid, text, reply_markup=admin_markup)
+    await c.message.edit_text('⚠️ <b>Спор открыт</b>\n\nАдминистрация получила уведомление. Ожидайте ссылку на арбитраж.', reply_markup=ik([[('📊 Продажи','sales')]]))
+    await c.bot.send_message(o['buyer_id'], f'⚠️ Продавец открыл спор по сделке №{oid}. Ожидайте ссылку на арбитраж.')
+    await c.answer()
 
 @router.callback_query(F.data.startswith('dispute_link:'))
 async def dispute_link_start(c:CallbackQuery, state:FSMContext):
@@ -789,7 +905,11 @@ async def sale(c:CallbackQuery):
     oid=int(c.data.split(':')[1])
     with closing(conn()) as db: o=db.execute('SELECT * FROM orders WHERE id=? AND seller_id=?',(oid,c.from_user.id)).fetchone()
     if not o: return await c.answer('Не найдено',show_alert=True)
-    await c.message.edit_text(f'📊 <b>Продажа №{oid}</b>\n\nНомер: <code>{o["phone"]}</code>\nСумма: {cash(o["price"])}$\nСтатус: <b>{o["status"]}</b>', reply_markup=ik([[('⬅️ Продажи','sales')]])); await c.answer()
+    rows=[]
+    if o['status'] in ('active','repeat_requested','code_requested'):
+        rows.append([('⚠️ Оспорить','seller_dispute:'+str(oid))])
+    rows.append([('⬅️ Продажи','sales')])
+    await c.message.edit_text(f'📊 <b>Продажа №{oid}</b>\n\nНомер: <code>{o["phone"]}</code>\nСумма: {cash(o["price"])}$\nСтатус: <b>{o["status"]}</b>', reply_markup=ik(rows)); await c.answer()
 
 @router.message(Command('admin'))
 async def admin(m:Message):
