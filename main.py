@@ -420,10 +420,11 @@ async def save_code(m:Message, state:FSMContext):
     data=await state.get_data(); oid=int(data['order_id'])
     with closing(conn()) as db:
         o=db.execute('SELECT * FROM orders WHERE id=? AND seller_id=?',(oid,m.from_user.id)).fetchone()
-        if not o or o['status']!='waiting_code': await state.clear(); return await m.answer('Заказ не найден или уже обработан.')
+        if not o or o['status'] not in ('code_requested','repeat_requested','waiting_code'):
+            await state.clear(); return await m.answer('Заказ не найден или уже обработан.')
         db.execute('UPDATE orders SET deal_code=?, status="active" WHERE id=?',(code,oid)); db.commit()
     await state.clear(); await m.answer('✅ Код отправлен покупателю. Ожидаем подтверждение сделки.')
-    await m.bot.send_message(o['buyer_id'], f'''📦 <b>Ваш товар по заказу №{oid}</b>\n\nНомер: <code>{o['phone']}</code>\nКод сделки: <code>{code}</code>\n\nПроверьте товар и подтвердите сделку.''', reply_markup=ik([[('✅ Подтвердить','confirm_order:'+str(oid)),('⚠️ Спор','dispute:'+str(oid))]]))
+    await m.bot.send_message(o['buyer_id'], f'''📦 <b>Ваш товар по заказу №{oid}</b>\n\nНомер: <code>{o['phone']}</code>\nКод сделки: <code>{code}</code>\n\nВыберите действие ниже.''', reply_markup=ik([[('✅ Подтвердить','confirm_order:'+str(oid))],[('🔂 Повтор','repeat_code:'+str(oid))],[('⚠️ Оспорить','dispute:'+str(oid))]]))
 
 @router.callback_query(F.data=='purchases')
 async def purchases(c:CallbackQuery):
