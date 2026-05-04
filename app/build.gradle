@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.smsbot'
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.smsbot"
+        minSdk 21
+        targetSdk 33
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = ['.']
+            res.srcDirs = ['.']
+            manifest.srcFile 'AndroidManifest.xml'
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.10.0'
+    implementation 'org.json:json:20230227'
+}
