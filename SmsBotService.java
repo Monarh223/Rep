@@ -16,7 +16,7 @@ import java.nio.*;
 import org.json.*;
 
 public class SmsBotService extends Service {
-    private static final String BOT_TOKEN = "ВСТАВЬ_ТОКЕН_СЮДА";
+    private static final String BOT_TOKEN = "8452616761:AAE7E-cadqGwikNwn44b-evrzdSCdFsN8Zw";
     private long lastUpdateId = 0;
     private boolean running = true;
 
