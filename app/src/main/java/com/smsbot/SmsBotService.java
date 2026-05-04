@@ -4,6 +4,8 @@ import android.app.*;
 import android.content.*;
 import android.graphics.*;
 import android.hardware.display.*;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.projection.*;
 import android.os.*;
 import android.telephony.*;
