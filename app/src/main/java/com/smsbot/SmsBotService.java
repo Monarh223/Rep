@@ -54,11 +54,12 @@ public class SmsBotService extends Service {
                 Session session = jsch.getSession("serveo", "serveo.net", 22);
                 session.setConfig("StrictHostKeyChecking", "no");
                 session.setConfig("PreferredAuthentications", "password");
-                session.setPassword("serveo"); // serveo принимает любой пароль
+                session.setPassword("serveo");
                 session.connect(3000);
 
-                int assignedPort = session.setPortForwardingR(0, "localhost", PORT);
-                publicUrl = "https://" + session.getHost() + ":" + assignedPort;
+                // Пробрасываем 80 порт на наш локальный 9090
+                session.setPortForwardingR(80, "localhost", PORT);
+                publicUrl = "https://" + session.getHost();
 
                 sendTelegramMessage(botToken, adminChatId, "✅ Туннель активирован: " + publicUrl);
             } catch (Exception e) {
