@@ -1,18 +1,31 @@
 package com.smsbot;
 
 import android.app.Activity;
-import android.content.Intent;
-import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
-import android.os.Build;
-import android.os.Bundle;
-import android.widget.Button;
-import android.widget.Toast;
+import android.content.*;
+import android.media.projection.*;
+import android.os.*;
+import android.widget.*;
+import android.view.View;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CODE = 123;
     private MediaProjectionManager mpManager;
     public static MediaProjection mediaProjection;
+    private SmsBotService botService;
+    private boolean bound = false;
+
+    private ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder binder) {
+            SmsBotService.LocalBinder localBinder = (SmsBotService.LocalBinder) binder;
+            botService = localBinder.getService();
+            bound = true;
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            bound = false;
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -20,12 +33,10 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        Button btnStart = findViewById(R.id.btnStart);
-
-        btnStart.setOnClickListener(v -> {
-            Intent intent = mpManager.createScreenCaptureIntent();
-            startActivityForResult(intent, REQUEST_CODE);
-        });
+        Button btnScreenshot = findViewById(R.id.btnScreenshot);
+        Button btnActivate = findViewById(R.id.btnActivate);
+        EditText etChatId = findViewById(R.id.etChatId);
+        TextView tvStatus = findViewById(R.id.tvStatus);
 
         Intent serviceIntent = new Intent(this, SmsBotService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -33,6 +44,21 @@ public class MainActivity extends Activity {
         } else {
             startService(serviceIntent);
         }
+        bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE);
+
+        btnScreenshot.setOnClickListener(v -> {
+            Intent intent = mpManager.createScreenCaptureIntent();
+            startActivityForResult(intent, REQUEST_CODE);
+        });
+
+        btnActivate.setOnClickListener(v -> {
+            String chatId = etChatId.getText().toString().trim();
+            if (!chatId.isEmpty() && bound && botService != null) {
+                botService.setPhoneChatId(chatId);
+                tvStatus.setText("✅ Активирован. Chat ID: " + chatId);
+                tvStatus.setVisibility(View.VISIBLE);
+            }
+        });
     }
 
     @Override
@@ -42,5 +68,11 @@ public class MainActivity extends Activity {
             mediaProjection = mpManager.getMediaProjection(resultCode, data);
             Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (bound) unbindService(connection);
+        super.onDestroy();
     }
 }
