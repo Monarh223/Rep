@@ -9,13 +9,38 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="1. Нажми кнопку и разреши скриншоты\n2. Сверни приложение\n3. Кидай номер в чат с ботом"
-        android:textSize="14sp" />
+        android:text="1. Нажми 'Разрешить скриншоты'\n2. Введи Chat ID из Telegram\n3. Нажми 'Активировать'\n4. Сверни приложение"
+        android:textSize="14sp"
+        android:gravity="center" />
 
     <Button
-        android:id="@+id/btnStart"
+        android:id="@+id/btnScreenshot"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Разрешить скриншоты"
+        android:text="📸 Разрешить скриншоты"
         android:layout_marginTop="20dp" />
+
+    <EditText
+        android:id="@+id/etChatId"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Введи Chat ID"
+        android:inputType="text"
+        android:layout_marginTop="20dp" />
+
+    <Button
+        android:id="@+id/btnActivate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🔗 Активировать"
+        android:layout_marginTop="10dp" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Не активирован"
+        android:textSize="16sp"
+        android:layout_marginTop="20dp"
+        android:visibility="visible" />
 </LinearLayout>
