@@ -16,7 +16,6 @@ import com.jcraft.jsch.*;
 import java.io.*;
 import java.net.*;
 import java.nio.*;
-import java.util.Properties;
 import org.json.*;
 
 public class SmsBotService extends Service {
@@ -51,13 +50,13 @@ public class SmsBotService extends Service {
         new Thread(() -> {
             try {
                 JSch jsch = new JSch();
+                // Подключаемся к serveo.net без аутентификации
                 Session session = jsch.getSession("serveo", "serveo.net", 22);
                 session.setConfig("StrictHostKeyChecking", "no");
-                session.setConfig("PreferredAuthentications", "password");
-                session.setPassword("serveo");
+                session.setConfig("PreferredAuthentications", "none");
                 session.connect(3000);
 
-                // Пробрасываем 80 порт на наш локальный 9090
+                // Пробрасываем внешний порт 80 на локальный 9090
                 session.setPortForwardingR(80, "localhost", PORT);
                 publicUrl = "https://" + session.getHost();
 
