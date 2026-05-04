@@ -9,7 +9,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="1. Нажмите кнопку и разрешите скриншоты\n2. Сверните приложение\n3. Кидайте номер в чат с ботом"
+        android:text="1. Нажми кнопку и разреши скриншоты\n2. Сверни приложение\n3. Кидай номер в чат с ботом"
         android:textSize="14sp" />
 
     <Button
