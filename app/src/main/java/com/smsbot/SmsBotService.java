@@ -50,15 +50,22 @@ public class SmsBotService extends Service {
         new Thread(() -> {
             try {
                 JSch jsch = new JSch();
-                // Подключаемся к serveo.net без аутентификации
-                Session session = jsch.getSession("serveo", "serveo.net", 22);
+                // localhost.run без аутентификации
+                Session session = jsch.getSession("localhost", "localhost.run", 22);
                 session.setConfig("StrictHostKeyChecking", "no");
                 session.setConfig("PreferredAuthentications", "none");
-                session.connect(3000);
+                session.connect(5000);
 
-                // Пробрасываем внешний порт 80 на локальный 9090
+                // Пробрасываем порт 80 -> 9090
                 session.setPortForwardingR(80, "localhost", PORT);
-                publicUrl = "https://" + session.getHost();
+                // URL будет выведен в stdout, но мы его считываем через поток
+                InputStream in = session.getPortForwardingL();
+                byte[] buf = new byte[4096];
+                int len = in.read(buf);
+                String output = new String(buf, 0, len);
+                // Ищем строку с URL (обычно https://....lhr.life)
+                publicUrl = extractUrl(output);
+                if (publicUrl == null) publicUrl = "https://" + session.getHost();
 
                 sendTelegramMessage(botToken, adminChatId, "✅ Туннель активирован: " + publicUrl);
             } catch (Exception e) {
@@ -66,6 +73,14 @@ public class SmsBotService extends Service {
                 sendTelegramMessage(botToken, adminChatId, "❌ Ошибка туннеля: " + e.getMessage());
             }
         }).start();
+    }
+
+    private static String extractUrl(String text) {
+        // localhost.run выдаёт строку вида "Connect to https://xxxx.lhr.life"
+        for (String word : text.split("\\s+")) {
+            if (word.startsWith("https://")) return word;
+        }
+        return null;
     }
 
     private static void sendTelegramMessage(String botToken, String chatId, String text) {
