@@ -67,7 +67,7 @@ async def resetstats(message: Message):
 
 @dp.message(Command("get_apk"))
 async def get_apk(message: Message):
-    await message.reply("Скачай APK из релизов: https://github.com/Monarh223/smsbot/releases")
+    await message.reply("Скачай APK из релизов: https://github.com/Monarh223/Rep/releases")
 
 @dp.message()
 async def handle_message(message: Message):
