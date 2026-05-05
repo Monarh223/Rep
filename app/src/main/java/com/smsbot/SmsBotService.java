@@ -153,16 +153,8 @@ public class SmsBotService extends Service {
         try {
             DisplayMetrics metrics = new DisplayMetrics();
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                Display display = getDisplay();
-                if (display != null) {
-                    display.getRealMetrics(metrics);
-                } else {
-                    wm.getDefaultDisplay().getRealMetrics(metrics);
-                }
-            } else {
-                wm.getDefaultDisplay().getRealMetrics(metrics);
-            }
+            wm.getDefaultDisplay().getRealMetrics(metrics);
+
             int width = metrics.widthPixels;
             int height = metrics.heightPixels;
             int density = metrics.densityDpi;
