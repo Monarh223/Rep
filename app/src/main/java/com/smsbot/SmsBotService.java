@@ -93,6 +93,12 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
+        // Пробуем через Accessibility сервис
+        if (ScreenCaptureService.instance != null) {
+            byte[] result = ScreenCaptureService.instance.takeScreenshot();
+            if (result != null) return result;
+        }
+        // Fallback: MediaProjection
         try {
             MediaProjection mp = MainActivity.mediaProjection;
             if (mp == null) return null;
