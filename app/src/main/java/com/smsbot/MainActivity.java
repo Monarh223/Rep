@@ -7,11 +7,17 @@ import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.Settings;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
@@ -29,6 +35,7 @@ public class MainActivity extends Activity {
 
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
+        Button btnSaveLog = findViewById(R.id.btnSaveLog);
         Button btnStop = findViewById(R.id.btnStop);
 
         btnAccessibility.setOnClickListener(v -> {
@@ -42,11 +49,39 @@ public class MainActivity extends Activity {
             startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
         });
 
+        btnSaveLog.setOnClickListener(v -> {
+            File logFile = new File(getExternalFilesDir(null), "sms_bot_log.txt");
+            if (logFile.exists()) {
+                try {
+                    File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    File exportFile = new File(downloadsDir, "sms_bot_log.txt");
+                    copyFile(logFile, exportFile);
+                    Toast.makeText(this, "Лог сохранён в Загрузки: " + exportFile.getAbsolutePath(), Toast.LENGTH_LONG).show();
+                } catch (Exception e) {
+                    Toast.makeText(this, "Ошибка сохранения: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            } else {
+                Toast.makeText(this, "Лог-файл пока не создан. Отправьте SMS для его появления.", Toast.LENGTH_LONG).show();
+            }
+        });
+
         btnStop.setOnClickListener(v -> {
             Intent serviceIntent = new Intent(this, SmsBotService.class);
             stopService(serviceIntent);
             Toast.makeText(this, "Сервис остановлен", Toast.LENGTH_SHORT).show();
         });
+    }
+
+    private void copyFile(File source, File dest) throws Exception {
+        InputStream in = new FileInputStream(source);
+        OutputStream out = new FileOutputStream(dest);
+        byte[] buf = new byte[1024];
+        int len;
+        while ((len = in.read(buf)) > 0) {
+            out.write(buf, 0, len);
+        }
+        in.close();
+        out.close();
     }
 
     private void startSmsService(Intent screenData, int resultCode) {
