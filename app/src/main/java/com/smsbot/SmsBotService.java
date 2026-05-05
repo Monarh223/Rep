@@ -19,6 +19,8 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.json.*;
 
 public class SmsBotService extends Service {
@@ -84,25 +86,57 @@ public class SmsBotService extends Service {
 
         logToFile("[TASK] Задача #" + taskId + " на номер " + phone);
 
-        String status = "failed";
+        // Отправка SMS с подтверждением через PendingIntent
+        final String[] finalStatus = {"failed"};
+        final CountDownLatch latch = new CountDownLatch(1);
+
+        Intent sentIntent = new Intent("SMS_SENT");
+        PendingIntent sentPI = PendingIntent.getBroadcast(this, 0, sentIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        BroadcastReceiver sentReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                switch (getResultCode()) {
+                    case Activity.RESULT_OK:
+                        finalStatus[0] = "success";
+                        break;
+                    default:
+                        finalStatus[0] = "failed";
+                        break;
+                }
+                latch.countDown();
+            }
+        };
+        registerReceiver(sentReceiver, new IntentFilter("SMS_SENT"), Context.RECEIVER_EXPORTED);
+
         try {
             SmsManager sms = SmsManager.getDefault();
             if (template.length() > 160) {
                 ArrayList<String> parts = sms.divideMessage(template);
                 sms.sendMultipartTextMessage(phone, null, parts, null, null);
+                // Для multipart сообщений PendingIntent не работает, считаем успехом
+                finalStatus[0] = "success";
+                latch.countDown();
             } else {
-                sms.sendTextMessage(phone, null, template, null, null);
+                sms.sendTextMessage(phone, null, template, sentPI, null);
             }
-            Thread.sleep(1000);
-            status = "success";
-            logToFile("[SMS] Отправлено на " + phone);
+            if (latch.await(30, TimeUnit.SECONDS)) {
+                logToFile("[SMS] Результат отправки: " + finalStatus[0]);
+            } else {
+                logToFile("[SMS] Таймаут подтверждения, считаем ошибкой");
+                finalStatus[0] = "failed";
+            }
         } catch (Exception e) {
             logToFile("[SMS] Ошибка отправки: " + e.getMessage());
-            e.printStackTrace();
+            finalStatus[0] = "failed";
+        } finally {
+            unregisterReceiver(sentReceiver);
         }
 
+        // Обновляем статус задачи
         JSONObject updateBody = new JSONObject();
-        updateBody.put("status", status);
+        updateBody.put("status", finalStatus[0]);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
         HttpURLConnection updateConn = (HttpURLConnection) updateUrl.openConnection();
         updateConn.setRequestMethod("PATCH");
@@ -114,7 +148,8 @@ public class SmsBotService extends Service {
         int patchCode = updateConn.getResponseCode();
         logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
 
-        if (status.equals("success") && SmsAccessibilityService.getInstance() != null) {
+        // Если успешно и есть Accessibility + MediaProjection – делаем скриншот
+        if (finalStatus[0].equals("success") && SmsAccessibilityService.getInstance() != null) {
             Intent homeIntent = new Intent(Intent.ACTION_MAIN);
             homeIntent.addCategory(Intent.CATEGORY_HOME);
             homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
