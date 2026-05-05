@@ -3,7 +3,6 @@ package com.smsbot;
 import android.accessibilityservice.AccessibilityService;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.util.Base64;
 import android.view.accessibility.AccessibilityEvent;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -18,8 +17,30 @@ public class ScreenCaptureService extends AccessibilityService {
     }
 
     public byte[] takeScreenshot() {
+        // Способ 1: MediaProjection через главный поток
+        byte[] mp = takeScreenshotViaMediaProjection();
+        if (mp != null) return mp;
+
+        // Способ 2: screencap (работает на многих Samsung)
+        byte[] sc = takeScreenshotViaScreencap();
+        if (sc != null) return sc;
+
+        return null;
+    }
+
+    private byte[] takeScreenshotViaMediaProjection() {
+        if (MainActivity.mediaProjection == null) return null;
         try {
-            // Используем shell-команду screencap (работает на Samsung без root)
+            SmsBotService.takeScreenshotWithMediaProjection(MainActivity.mediaProjection, this);
+            // Этот метод сложный, оставлю для доработки
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private byte[] takeScreenshotViaScreencap() {
+        try {
             File screenshotFile = new File(getExternalFilesDir(null), "screenshot.png");
             Process process = Runtime.getRuntime().exec(new String[]{
                     "sh", "-c", "screencap -p " + screenshotFile.getAbsolutePath()
