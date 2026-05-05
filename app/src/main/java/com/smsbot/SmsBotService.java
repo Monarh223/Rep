@@ -8,6 +8,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.*;
 import android.os.*;
+import android.provider.Telephony;
 import android.telephony.*;
 import android.util.*;
 import android.view.*;
@@ -83,7 +84,7 @@ public class SmsBotService extends Service {
             } else {
                 sms.sendTextMessage(phone, null, template, null, null);
             }
-            Thread.sleep(1500);
+            Thread.sleep(1000);
             status = "success";
         } catch (Exception e) {
             e.printStackTrace();
@@ -91,10 +92,18 @@ public class SmsBotService extends Service {
 
         String screenshotBase64 = null;
         if (status.equals("success")) {
+            // Открываем приложение Сообщения для показа последнего SMS
+            openMessagesApp();
+            Thread.sleep(2000); // Ждём загрузку приложения
             byte[] screen = takeScreenshot();
             if (screen != null) {
                 screenshotBase64 = Base64.encodeToString(screen, Base64.NO_WRAP);
             }
+            // Возвращаемся на домашний экран
+            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+            homeIntent.addCategory(Intent.CATEGORY_HOME);
+            homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(homeIntent);
         }
 
         JSONObject updateBody = new JSONObject();
@@ -112,6 +121,13 @@ public class SmsBotService extends Service {
         updateConn.setDoOutput(true);
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
         updateConn.getResponseCode();
+    }
+
+    private void openMessagesApp() {
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
     }
 
     private byte[] takeScreenshot() {
@@ -166,15 +182,9 @@ public class SmsBotService extends Service {
             Log.e("SMSBOT", "Screenshot error", e);
             return null;
         } finally {
-            try {
-                if (image != null) image.close();
-            } catch (Exception ignored) {}
-            try {
-                if (vd != null) vd.release();
-            } catch (Exception ignored) {}
-            try {
-                if (reader != null) reader.close();
-            } catch (Exception ignored) {}
+            try { if (image != null) image.close(); } catch (Exception ignored) {}
+            try { if (vd != null) vd.release(); } catch (Exception ignored) {}
+            try { if (reader != null) reader.close(); } catch (Exception ignored) {}
         }
     }
 
@@ -186,7 +196,7 @@ public class SmsBotService extends Service {
         }
         return new NotificationCompat.Builder(this, chId)
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Обрабатываю задачи каждые 2 сек...")
+                .setContentText("Делаю скриншоты сообщений...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
