@@ -1,5 +1,6 @@
 package com.smsbot;
 
+import java.util.ArrayList;
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
