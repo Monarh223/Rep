@@ -3,6 +3,7 @@ import asyncio
 import aiohttp
 import base64
 import json
+import re
 from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
@@ -64,7 +65,6 @@ def user_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton(text="📋 Отчёт за сегодня", callback_data="today")],
-        [InlineKeyboardButton(text="📱 Скачать APK", callback_data="get_apk")],
         [InlineKeyboardButton(text="🟢 Пинг", callback_data="ping")]
     ])
 
@@ -186,9 +186,6 @@ async def callback_handler(callback: CallbackQuery):
                 if resp.status == 200:
                     await callback.message.reply("♻ Статистика сброшена")
 
-    elif cmd == "get_apk":
-        await callback.message.reply("📱 Скачай APK: https://github.com/Monarh223/Rep/releases")
-
     elif cmd == "ping":
         await callback.message.reply("🟢 Бот работает")
 
@@ -225,7 +222,7 @@ async def worklook(message: Message):
         save_json(DATA_FILE, data)
         await message.reply(f"👁 Слежу за группой: {message.chat.title}")
 
-# ---------- Обработка сообщений группы (исправленный парсер) ----------
+# ---------- Обработка сообщений группы ----------
 @dp.message()
 async def handle_message(message: Message):
     if message.chat.id != data.get("target_group"):
@@ -234,7 +231,6 @@ async def handle_message(message: Message):
     if not text.strip() or text.startswith("/"):
         return
 
-    # Ищем ПЕРВЫЙ номер — он получатель
     words = text.strip().split()
     phone = None
     for word in words:
@@ -246,9 +242,6 @@ async def handle_message(message: Message):
     if not phone:
         return
 
-    # Шаблон — ВСЁ сообщение, кроме первого вхождения номера
-    import re
-    # Убираем первое вхождение номера (с +7 или 8)
     pattern = re.escape(phone) + r'|' + re.escape(phone[1:]) + r'|' + re.escape('8' + phone[2:])
     template = re.sub(pattern, '', text, count=1).strip()
     if not template:
