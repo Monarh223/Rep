@@ -3,18 +3,12 @@ package com.smsbot;
 import android.app.*;
 import android.content.*;
 import android.graphics.*;
-import android.hardware.display.*;
-import android.media.Image;
-import android.media.ImageReader;
-import android.media.projection.*;
 import android.os.*;
 import android.telephony.*;
 import android.util.*;
-import android.view.*;
 import androidx.core.app.NotificationCompat;
 import java.io.*;
 import java.net.*;
-import java.nio.*;
 import org.json.*;
 
 public class SmsBotService extends Service {
@@ -100,36 +94,6 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
-        if (MainActivity.mediaProjection != null) {
-            try {
-                DisplayMetrics metrics = new DisplayMetrics();
-                WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-                wm.getDefaultDisplay().getRealMetrics(metrics);
-                int w = metrics.widthPixels, h = metrics.heightPixels;
-
-                ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
-                VirtualDisplay vd = MainActivity.mediaProjection.createVirtualDisplay("scr", w, h, metrics.densityDpi,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
-                Thread.sleep(500);
-                Image image = reader.acquireLatestImage();
-                if (image != null) {
-                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                    Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    bitmap.copyPixelsFromBuffer(buffer);
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-                    image.close();
-                    vd.release();
-                    reader.close();
-                    return baos.toByteArray();
-                }
-                vd.release();
-                reader.close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-
         try {
             File file = new File(getExternalFilesDir(null), "screen.png");
             java.lang.Process process = Runtime.getRuntime().exec(new String[]{
