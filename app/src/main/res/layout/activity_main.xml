@@ -16,14 +16,7 @@
         android:id="@+id/btnScreenshot"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="📸 Разрешить скриншоты" />
-
-    <Button
-        android:id="@+id/btnStart"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="🚀 Запустить сервис"
-        android:layout_marginTop="10dp" />
+        android:text="📸 Разрешить скриншоты и запустить сервис" />
 
     <Button
         android:id="@+id/btnStop"
