@@ -1,9 +1,4 @@
-import os
-import asyncio
-import aiohttp
-import base64
-import json
-import re
+import os, asyncio, aiohttp, base64, json, re
 from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
