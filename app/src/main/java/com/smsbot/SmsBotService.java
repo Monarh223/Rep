@@ -2,133 +2,134 @@ package com.smsbot;
 
 import android.app.*;
 import android.content.*;
+import android.graphics.*;
+import android.hardware.display.*;
+import android.media.Image;
+import android.media.ImageReader;
+import android.media.projection.*;
 import android.os.*;
 import android.telephony.*;
+import android.util.*;
+import android.view.*;
 import androidx.core.app.NotificationCompat;
 import java.io.*;
 import java.net.*;
+import java.nio.*;
+import java.util.ArrayList;
 import org.json.*;
 
 public class SmsBotService extends Service {
+    private static final String SUPABASE_URL = "https://xusnqiovgqgrxxyikvxk.supabase.co";
+    private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
-    private String botToken = "";
-    private String groupId = "";
-    private long lastUpdateId = 0;
-    private SharedPreferences prefs;
-    private int sentCount = 0;
-    private int failCount = 0;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
-        botToken = prefs.getString("bot_token", "");
-        groupId = prefs.getString("group_id", "");
-        lastUpdateId = prefs.getLong("last_update_id", 0);
         startForeground(1, buildNotification());
         new Thread(() -> {
             while (running) {
-                if (!botToken.isEmpty() && !groupId.isEmpty()) {
-                    checkGroupMessages();
+                try {
+                    checkAndProcessTasks();
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
-                try { Thread.sleep(3000); } catch (Exception e) {}
+                try { Thread.sleep(2000); } catch (Exception e) {}
             }
         }).start();
     }
 
-    private void checkGroupMessages() {
+    private void checkAndProcessTasks() throws Exception {
+        URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?status=eq.pending&order=created_at.asc&limit=1");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestProperty("apikey", SUPABASE_KEY);
+        conn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
+        conn.setRequestMethod("GET");
+
+        if (conn.getResponseCode() != 200) return;
+        BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        reader.close();
+        JSONArray tasks = new JSONArray(sb.toString());
+        if (tasks.length() == 0) return;
+
+        JSONObject task = tasks.getJSONObject(0);
+        int taskId = task.getInt("id");
+        String phone = task.getString("phone");
+        String template = task.getString("template");
+
+        String status = "failed";
         try {
-            String urlStr = "https://api.telegram.org/bot" + botToken + "/getUpdates?offset=" + (lastUpdateId + 1) + "&timeout=5";
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            JSONObject j = new JSONObject(sb.toString());
-            if (!j.getBoolean("ok")) return;
-            JSONArray results = j.getJSONArray("result");
-            for (int i = 0; i < results.length(); i++) {
-                JSONObject update = results.getJSONObject(i);
-                long updateId = update.getLong("update_id");
-                if (updateId > lastUpdateId) lastUpdateId = updateId;
-                JSONObject msg = update.optJSONObject("message");
-                if (msg == null) continue;
-                String chatId = msg.getJSONObject("chat").getString("id");
-                if (!chatId.equals(groupId)) continue;
-
-                String text = msg.optString("text", "");
-                String phone = extractPhone(text);
-                if (phone == null) continue;
-                String template = extractTemplate(text, phone);
-
-                boolean success = true;
-                try {
-                    SmsManager.getDefault().sendTextMessage(phone, null, template, null, null);
-                    sentCount++;
-                    Thread.sleep(1000);
-                } catch (Exception e) {
-                    success = false;
-                    failCount++;
-                }
-                updateNotification();
-
-                if (success) {
-                    sendPlainText(chatId, "✅ Доставлено: " + phone);
-                } else {
-                    sendPlainText(chatId, "❌ Сбой (Не доставлено): " + phone);
-                }
+            SmsManager sms = SmsManager.getDefault();
+            if (template.length() > 160) {
+                ArrayList<String> parts = sms.divideMessage(template);
+                sms.sendMultipartTextMessage(phone, null, parts, null, null);
+            } else {
+                sms.sendTextMessage(phone, null, template, null, null);
             }
-            prefs.edit().putLong("last_update_id", lastUpdateId).apply();
+            Thread.sleep(1500);
+            status = "success";
         } catch (Exception e) {
             e.printStackTrace();
         }
-    }
 
-    private String extractPhone(String text) {
-        String[] words = text.split("\\s+");
-        for (String w : words) {
-            String digits = w.replaceAll("[^0-9]", "");
-            if (digits.length() == 11 && (digits.startsWith("7") || digits.startsWith("8"))) {
-                return "+7" + digits.substring(digits.length() - 10);
-            }
-            if (digits.length() == 10 && digits.startsWith("9")) {
-                return "+7" + digits;
+        String screenshotBase64 = null;
+        if (status.equals("success")) {
+            byte[] screenshotBytes = takeScreenshot();
+            if (screenshotBytes != null) {
+                screenshotBase64 = Base64.encodeToString(screenshotBytes, Base64.NO_WRAP);
             }
         }
-        return null;
+
+        JSONObject updateBody = new JSONObject();
+        updateBody.put("status", status);
+        if (screenshotBase64 != null) {
+            updateBody.put("screenshot", screenshotBase64);
+        }
+
+        URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
+        HttpURLConnection updateConn = (HttpURLConnection) updateUrl.openConnection();
+        updateConn.setRequestMethod("PATCH");
+        updateConn.setRequestProperty("apikey", SUPABASE_KEY);
+        updateConn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
+        updateConn.setRequestProperty("Content-Type", "application/json");
+        updateConn.setDoOutput(true);
+        updateConn.getOutputStream().write(updateBody.toString().getBytes());
+        updateConn.getResponseCode();
     }
 
-    private String extractTemplate(String text, String phone) {
-        String clean = text.replaceFirst(phone.replace("+", "\\+"), "").trim();
-        if (clean.isEmpty()) clean = text.replaceFirst("8" + phone.substring(2), "").trim();
-        if (clean.isEmpty()) clean = "Сообщение";
-        return clean;
-    }
-
-    private void sendPlainText(String chatId, String text) {
+    private byte[] takeScreenshot() {
+        if (MainActivity.mediaProjection == null) return null;
         try {
-            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendMessage");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            JSONObject body = new JSONObject();
-            body.put("chat_id", chatId);
-            body.put("text", text);
-            conn.getOutputStream().write(body.toString().getBytes());
-            conn.getResponseCode();
-        } catch (Exception e) {}
-    }
+            DisplayMetrics metrics = new DisplayMetrics();
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            wm.getDefaultDisplay().getRealMetrics(metrics);
+            int w = metrics.widthPixels, h = metrics.heightPixels;
 
-    private void updateNotification() {
-        Notification notification = new NotificationCompat.Builder(this, "smsbot")
-                .setContentTitle("SMS Bot активен")
-                .setContentText("Отправлено: " + sentCount + " | Ошибок: " + failCount)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .build();
-        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(1, notification);
+            ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
+            VirtualDisplay vd = MainActivity.mediaProjection.createVirtualDisplay("scr", w, h, metrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
+            Thread.sleep(500);
+            Image image = reader.acquireLatestImage();
+            if (image != null) {
+                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                bitmap.copyPixelsFromBuffer(buffer);
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+                image.close();
+                vd.release();
+                reader.close();
+                return baos.toByteArray();
+            }
+            vd.release();
+            reader.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private Notification buildNotification() {
@@ -138,8 +139,8 @@ public class SmsBotService extends Service {
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
         }
         return new NotificationCompat.Builder(this, chId)
-                .setContentTitle("SMS Bot")
-                .setContentText("Запуск...")
+                .setContentTitle("SMS Bot активен")
+                .setContentText("Опрос задач...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
