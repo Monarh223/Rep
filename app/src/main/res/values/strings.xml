@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">SMS Bot</string>
-    <string name="accessibility_description">Сервис для автоматических скриншотов</string>
+    <string name="accessibility_description">Служба SMS Bot для автоматического открытия сообщений и снятия скриншотов</string>
 </resources>
