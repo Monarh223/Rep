@@ -84,11 +84,9 @@ public class MainActivity extends Activity {
                 mediaProjection = mpManager.getMediaProjection(resultCode, data);
                 if (mediaProjection != null) {
                     Toast.makeText(this, "Скриншоты разрешены!", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "Не удалось. Попробуйте ещё раз.", Toast.LENGTH_SHORT).show();
                 }
             } catch (Exception e) {
-                Toast.makeText(this, "Ошибка. Пропускаем скриншоты.", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Ошибка скриншота", Toast.LENGTH_SHORT).show();
             }
         }
     }
