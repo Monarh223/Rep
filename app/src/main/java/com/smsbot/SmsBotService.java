@@ -15,7 +15,10 @@ import androidx.core.app.NotificationCompat;
 import java.io.*;
 import java.net.*;
 import java.nio.*;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
+import java.util.Locale;
 import org.json.*;
 
 public class SmsBotService extends Service {
@@ -35,6 +38,7 @@ public class SmsBotService extends Service {
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             if (manager != null) {
                 mediaProjection = manager.getMediaProjection(resultCode, data);
+                logToFile("[MEDIA] MediaProjection получен");
             }
         }
 
@@ -45,6 +49,7 @@ public class SmsBotService extends Service {
                     try {
                         checkAndProcessTasks();
                     } catch (Exception e) {
+                        logToFile("[ERROR] Цикл задач: " + e.getMessage());
                         e.printStackTrace();
                     }
                     try { Thread.sleep(2000); } catch (Exception e) {}
@@ -61,7 +66,10 @@ public class SmsBotService extends Service {
         conn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
         conn.setRequestMethod("GET");
 
-        if (conn.getResponseCode() != 200) return;
+        if (conn.getResponseCode() != 200) {
+            logToFile("[SUPABASE] Ошибка GET: " + conn.getResponseCode());
+            return;
+        }
         BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
         StringBuilder sb = new StringBuilder();
         String line;
@@ -75,6 +83,8 @@ public class SmsBotService extends Service {
         String phone = task.getString("phone");
         String template = task.getString("template");
 
+        logToFile("[TASK] Задача #" + taskId + " на номер " + phone);
+
         String status = "failed";
         try {
             SmsManager sms = SmsManager.getDefault();
@@ -86,7 +96,9 @@ public class SmsBotService extends Service {
             }
             Thread.sleep(1000);
             status = "success";
+            logToFile("[SMS] Отправлено на " + phone);
         } catch (Exception e) {
+            logToFile("[SMS] Ошибка отправки: " + e.getMessage());
             e.printStackTrace();
         }
 
@@ -100,13 +112,17 @@ public class SmsBotService extends Service {
         updateConn.setRequestProperty("Content-Type", "application/json");
         updateConn.setDoOutput(true);
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
-        updateConn.getResponseCode();
+        int patchCode = updateConn.getResponseCode();
+        logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
 
         if (status.equals("success") && SmsAccessibilityService.getInstance() != null) {
+            logToFile("[ACCESS] Открываю SMS диалог...");
             SmsAccessibilityService.getInstance().openSmsDialog(phone);
+            logToFile("[SCREENSHOT] Жду 4 секунды...");
             Thread.sleep(4000);
             String screenshotBase64 = takeScreenshot();
             if (screenshotBase64 != null) {
+                logToFile("[SCREENSHOT] Успешно сделан, размер base64: " + screenshotBase64.length());
                 updateBody = new JSONObject();
                 updateBody.put("screenshot", screenshotBase64);
                 updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -118,13 +134,20 @@ public class SmsBotService extends Service {
                 updateConn.setDoOutput(true);
                 updateConn.getOutputStream().write(updateBody.toString().getBytes());
                 updateConn.getResponseCode();
+                logToFile("[SUPABASE] Скриншот загружен в задачу #" + taskId);
+            } else {
+                logToFile("[SCREENSHOT] ОШИБКА: скриншот не сделан (base64 == null)");
             }
+        } else {
+            logToFile("[ERROR] Accessibility не доступен или SMS не отправлено");
         }
     }
 
-    // Метод скриншота с учётом rowStride / pixelStride (исправлен ChatGPT)
     private String takeScreenshot() {
-        if (mediaProjection == null) return null;
+        if (mediaProjection == null) {
+            logToFile("[SCREENSHOT] ОШИБКА: MediaProjection is null. Сначала нажми 'Разрешить скриншоты'");
+            return null;
+        }
         ImageReader reader = null;
         VirtualDisplay vd = null;
         Image image = null;
@@ -150,12 +173,16 @@ public class SmsBotService extends Service {
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     reader.getSurface(), null, null
             );
+            logToFile("[SCREENSHOT] VirtualDisplay создан: " + width + "x" + height);
             for (int i = 0; i < 10; i++) {
                 Thread.sleep(300);
                 image = reader.acquireLatestImage();
                 if (image != null) break;
             }
-            if (image == null) return null;
+            if (image == null) {
+                logToFile("[SCREENSHOT] ОШИБКА: Image is null после 10 попыток");
+                return null;
+            }
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
             int pixelStride = planes[0].getPixelStride();
@@ -170,14 +197,28 @@ public class SmsBotService extends Service {
             croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
             bitmap.recycle();
             croppedBitmap.recycle();
+            logToFile("[SCREENSHOT] Размер JPEG: " + baos.size() + " байт");
             return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
         } catch (Exception e) {
-            Log.e("SMS_BOT", "Screenshot failed", e);
+            logToFile("[SCREENSHOT] Ошибка: " + e.getMessage());
+            e.printStackTrace();
             return null;
         } finally {
             try { if (image != null) image.close(); } catch (Exception ignored) {}
             try { if (vd != null) vd.release(); } catch (Exception ignored) {}
             try { if (reader != null) reader.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void logToFile(String message) {
+        try {
+            File logFile = new File(getExternalFilesDir(null), "sms_bot_log.txt");
+            FileOutputStream fos = new FileOutputStream(logFile, true);
+            String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+            fos.write((timestamp + " " + message + "\n").getBytes());
+            fos.close();
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
