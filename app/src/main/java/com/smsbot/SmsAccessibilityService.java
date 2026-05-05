@@ -2,8 +2,8 @@ package com.smsbot;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
-import android.accessibilityservice.ScreenshotResult;
-import android.accessibilityservice.TakeScreenshotCallback;
+import android.accessibilityservice.AccessibilityService.ScreenshotResult;
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
@@ -12,7 +12,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
+import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
+
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
@@ -48,7 +50,6 @@ public class SmsAccessibilityService extends AccessibilityService {
         setServiceInfo(info);
     }
 
-    // Вызывается из SmsBotService после успешной отправки SMS
     public void setPendingPhone(String phone) {
         this.pendingPhone = phone;
         handler.post(() -> openSmsApp());
@@ -61,7 +62,7 @@ public class SmsAccessibilityService extends AccessibilityService {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         } catch (Exception e) {
-            Log.e("SMS_ACCESS", "Не удалось открыть SMS", e);
+            Log.e("SMS_ACCESS", "Cannot open SMS app", e);
         }
     }
 
@@ -78,18 +79,18 @@ public class SmsAccessibilityService extends AccessibilityService {
                 if (phoneCopy == null) return;
                 takeScreenshotAndUpload();
                 pendingPhone = null;
-            }, 3000);
+            }, 2500);
         }
     }
 
     private void takeScreenshotAndUpload() {
         final String phoneForUpload = pendingPhone;
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            Log.e("SMS_ACCESS", "Требуется Android 11+");
+            Log.e("SMS_ACCESS", "takeScreenshot requires Android 11+");
             return;
         }
         takeScreenshot(
-                android.view.Display.DEFAULT_DISPLAY,
+                Display.DEFAULT_DISPLAY,
                 getMainExecutor(),
                 new TakeScreenshotCallback() {
                     @Override
@@ -100,7 +101,7 @@ public class SmsAccessibilityService extends AccessibilityService {
                                     result.getColorSpace()
                             );
                             if (bitmap == null) {
-                                Log.e("SMS_ACCESS", "Bitmap пустой");
+                                Log.e("SMS_ACCESS", "Bitmap null");
                                 return;
                             }
                             Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, false);
@@ -114,13 +115,13 @@ public class SmsAccessibilityService extends AccessibilityService {
                             copy.recycle();
                             result.getHardwareBuffer().close();
                         } catch (Exception e) {
-                            Log.e("SMS_ACCESS", "Ошибка сохранения скриншота", e);
+                            Log.e("SMS_ACCESS", "Screenshot save error", e);
                         }
                     }
 
                     @Override
                     public void onFailure(int errorCode) {
-                        Log.e("SMS_ACCESS", "Ошибка скриншота: " + errorCode);
+                        Log.e("SMS_ACCESS", "Screenshot failed: " + errorCode);
                     }
                 }
         );
@@ -154,7 +155,7 @@ public class SmsAccessibilityService extends AccessibilityService {
             updateConn.getOutputStream().write(updateBody.toString().getBytes());
             updateConn.getResponseCode();
         } catch (Exception e) {
-            Log.e("SMS_ACCESS", "Supabase update error", e);
+            Log.e("SMS_ACCESS", "Update error", e);
         }
     }
 
