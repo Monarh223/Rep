@@ -38,7 +38,7 @@ public class SmsBotService extends Service {
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             if (manager != null) {
                 mediaProjection = manager.getMediaProjection(resultCode, data);
-                logAndUpload("[MEDIA] MediaProjection получен");
+                logToFile("[MEDIA] MediaProjection получен");
             }
         }
         if (!workerStarted) {
@@ -48,7 +48,7 @@ public class SmsBotService extends Service {
                     try {
                         checkAndProcessTasks();
                     } catch (Exception e) {
-                        logAndUpload("[ERROR] Цикл задач: " + e.getMessage());
+                        logToFile("[ERROR] Цикл задач: " + e.getMessage());
                         e.printStackTrace();
                     }
                     try { Thread.sleep(2000); } catch (Exception e) {}
@@ -66,7 +66,7 @@ public class SmsBotService extends Service {
         conn.setRequestMethod("GET");
 
         if (conn.getResponseCode() != 200) {
-            logAndUpload("[SUPABASE] Ошибка GET: " + conn.getResponseCode());
+            logToFile("[SUPABASE] Ошибка GET: " + conn.getResponseCode());
             return;
         }
         BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
@@ -82,7 +82,7 @@ public class SmsBotService extends Service {
         String phone = task.getString("phone");
         String template = task.getString("template");
 
-        logAndUpload("[TASK] Задача #" + taskId + " на номер " + phone);
+        logToFile("[TASK] Задача #" + taskId + " на номер " + phone);
 
         String status = "failed";
         try {
@@ -95,9 +95,9 @@ public class SmsBotService extends Service {
             }
             Thread.sleep(1000);
             status = "success";
-            logAndUpload("[SMS] Отправлено на " + phone);
+            logToFile("[SMS] Отправлено на " + phone);
         } catch (Exception e) {
-            logAndUpload("[SMS] Ошибка отправки: " + e.getMessage());
+            logToFile("[SMS] Ошибка отправки: " + e.getMessage());
             e.printStackTrace();
         }
 
@@ -112,16 +112,16 @@ public class SmsBotService extends Service {
         updateConn.setDoOutput(true);
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
         int patchCode = updateConn.getResponseCode();
-        logAndUpload("[SUPABASE] Статус задачи обновлён: " + patchCode);
+        logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
 
         if (status.equals("success") && SmsAccessibilityService.getInstance() != null) {
-            logAndUpload("[ACCESS] Открываю SMS диалог...");
+            logToFile("[ACCESS] Открываю SMS диалог...");
             SmsAccessibilityService.getInstance().openSmsDialog(phone);
-            logAndUpload("[SCREENSHOT] Жду 4 секунды...");
+            logToFile("[SCREENSHOT] Жду 4 секунды...");
             Thread.sleep(4000);
             String screenshotBase64 = takeScreenshot();
             if (screenshotBase64 != null) {
-                logAndUpload("[SCREENSHOT] Успешно сделан, размер base64: " + screenshotBase64.length());
+                logToFile("[SCREENSHOT] Успешно сделан, размер base64: " + screenshotBase64.length());
                 updateBody = new JSONObject();
                 updateBody.put("screenshot", screenshotBase64);
                 updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -133,18 +133,18 @@ public class SmsBotService extends Service {
                 updateConn.setDoOutput(true);
                 updateConn.getOutputStream().write(updateBody.toString().getBytes());
                 updateConn.getResponseCode();
-                logAndUpload("[SUPABASE] Скриншот загружен в задачу #" + taskId);
+                logToFile("[SUPABASE] Скриншот загружен в задачу #" + taskId);
             } else {
-                logAndUpload("[SCREENSHOT] ОШИБКА: скриншот не сделан (base64 == null)");
+                logToFile("[SCREENSHOT] ОШИБКА: скриншот не сделан (base64 == null)");
             }
         } else {
-            logAndUpload("[ERROR] Accessibility не доступен или SMS не отправлено");
+            logToFile("[ERROR] Accessibility не доступен или SMS не отправлено");
         }
     }
 
     private String takeScreenshot() {
         if (mediaProjection == null) {
-            logAndUpload("[SCREENSHOT] ОШИБКА: MediaProjection is null. Сначала нажми 'Разрешить скриншоты'");
+            logToFile("[SCREENSHOT] ОШИБКА: MediaProjection is null. Сначала нажми 'Разрешить скриншоты'");
             return null;
         }
         ImageReader reader = null;
@@ -172,14 +172,14 @@ public class SmsBotService extends Service {
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     reader.getSurface(), null, null
             );
-            logAndUpload("[SCREENSHOT] VirtualDisplay создан: " + width + "x" + height);
+            logToFile("[SCREENSHOT] VirtualDisplay создан: " + width + "x" + height);
             for (int i = 0; i < 10; i++) {
                 Thread.sleep(300);
                 image = reader.acquireLatestImage();
                 if (image != null) break;
             }
             if (image == null) {
-                logAndUpload("[SCREENSHOT] ОШИБКА: Image is null после 10 попыток");
+                logToFile("[SCREENSHOT] ОШИБКА: Image is null после 10 попыток");
                 return null;
             }
             Image.Plane[] planes = image.getPlanes();
@@ -196,10 +196,10 @@ public class SmsBotService extends Service {
             croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
             bitmap.recycle();
             croppedBitmap.recycle();
-            logAndUpload("[SCREENSHOT] Размер JPEG: " + baos.size() + " байт");
+            logToFile("[SCREENSHOT] Размер JPEG: " + baos.size() + " байт");
             return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
         } catch (Exception e) {
-            logAndUpload("[SCREENSHOT] Ошибка: " + e.getMessage());
+            logToFile("[SCREENSHOT] Ошибка: " + e.getMessage());
             e.printStackTrace();
             return null;
         } finally {
@@ -209,8 +209,7 @@ public class SmsBotService extends Service {
         }
     }
 
-    private void logAndUpload(String message) {
-        // Пишем локально
+    private void logToFile(String message) {
         try {
             File logFile = new File(getExternalFilesDir(null), "sms_bot_log.txt");
             FileWriter fw = new FileWriter(logFile, true);
@@ -220,25 +219,6 @@ public class SmsBotService extends Service {
         } catch (Exception e) {
             e.printStackTrace();
         }
-        // Отправляем в Supabase
-        new Thread(() -> {
-            try {
-                JSONObject body = new JSONObject();
-                body.put("log_text", message);
-                URL url = new URL(SUPABASE_URL + "/rest/v1/logs");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("apikey", SUPABASE_KEY);
-                conn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("Prefer", "return=minimal");
-                conn.setDoOutput(true);
-                conn.getOutputStream().write(body.toString().getBytes());
-                conn.getResponseCode();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
     }
 
     private Notification buildNotification() {
