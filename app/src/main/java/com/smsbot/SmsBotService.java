@@ -7,8 +7,8 @@ import android.hardware.display.*;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.*;
+import android.net.Uri;
 import android.os.*;
-import android.provider.Telephony;
 import android.telephony.*;
 import android.util.*;
 import android.view.*;
@@ -92,18 +92,16 @@ public class SmsBotService extends Service {
 
         String screenshotBase64 = null;
         if (status.equals("success")) {
-            // Открываем приложение Сообщения для показа последнего SMS
-            openMessagesApp();
-            Thread.sleep(2000); // Ждём загрузку приложения
+            // Открываем переписку с конкретным номером
+            openSmsConversation(phone);
+            Thread.sleep(2000);
+
             byte[] screen = takeScreenshot();
             if (screen != null) {
                 screenshotBase64 = Base64.encodeToString(screen, Base64.NO_WRAP);
             }
-            // Возвращаемся на домашний экран
-            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
-            homeIntent.addCategory(Intent.CATEGORY_HOME);
-            homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(homeIntent);
+
+            returnToHome();
         }
 
         JSONObject updateBody = new JSONObject();
@@ -123,18 +121,31 @@ public class SmsBotService extends Service {
         updateConn.getResponseCode();
     }
 
-    private void openMessagesApp() {
-        Intent intent = new Intent(Intent.ACTION_MAIN);
-        intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(intent);
+    private void openSmsConversation(String phone) {
+        // Открыть стандартное приложение Сообщения с конкретным номером
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse("sms:" + phone));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            // Если не получилось — открываем просто Сообщения
+            Intent intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        }
+    }
+
+    private void returnToHome() {
+        Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+        homeIntent.addCategory(Intent.CATEGORY_HOME);
+        homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(homeIntent);
     }
 
     private byte[] takeScreenshot() {
-        if (mediaProjection == null) {
-            Log.e("SMSBOT", "MediaProjection is null");
-            return null;
-        }
+        if (mediaProjection == null) return null;
         ImageReader reader = null;
         VirtualDisplay vd = null;
         Image image = null;
@@ -142,35 +153,22 @@ public class SmsBotService extends Service {
             DisplayMetrics metrics = new DisplayMetrics();
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             wm.getDefaultDisplay().getRealMetrics(metrics);
-            int w = metrics.widthPixels;
-            int h = metrics.heightPixels;
+            int w = metrics.widthPixels, h = metrics.heightPixels;
             reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
             vd = mediaProjection.createVirtualDisplay(
-                    "screen_capture",
-                    w,
-                    h,
-                    metrics.densityDpi,
+                    "screen_capture", w, h, metrics.densityDpi,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    reader.getSurface(),
-                    null,
-                    null
+                    reader.getSurface(), null, null
             );
             Thread.sleep(800);
             image = reader.acquireLatestImage();
-            if (image == null) {
-                Log.e("SMSBOT", "Image is null");
-                return null;
-            }
+            if (image == null) return null;
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
             int pixelStride = planes[0].getPixelStride();
             int rowStride = planes[0].getRowStride();
             int rowPadding = rowStride - pixelStride * w;
-            Bitmap bitmap = Bitmap.createBitmap(
-                    w + rowPadding / pixelStride,
-                    h,
-                    Bitmap.Config.ARGB_8888
-            );
+            Bitmap bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888);
             bitmap.copyPixelsFromBuffer(buffer);
             Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, w, h);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -179,7 +177,6 @@ public class SmsBotService extends Service {
             cropped.recycle();
             return baos.toByteArray();
         } catch (Exception e) {
-            Log.e("SMSBOT", "Screenshot error", e);
             return null;
         } finally {
             try { if (image != null) image.close(); } catch (Exception ignored) {}
@@ -196,7 +193,7 @@ public class SmsBotService extends Service {
         }
         return new NotificationCompat.Builder(this, chId)
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Делаю скриншоты сообщений...")
+                .setContentText("Снимаю переписку...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
