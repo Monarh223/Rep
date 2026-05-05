@@ -4,7 +4,6 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -17,7 +16,6 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
     private MediaProjectionManager mpManager;
-    public static MediaProjection mediaProjection;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -42,7 +40,7 @@ public class MainActivity extends Activity {
                         new String[]{Manifest.permission.SEND_SMS},
                         REQUEST_CODE_SMS);
             } else {
-                startService();
+                startSmsService(null, 0);
             }
         });
 
@@ -53,8 +51,12 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void startService() {
+    private void startSmsService(Intent screenData, int resultCode) {
         Intent serviceIntent = new Intent(this, SmsBotService.class);
+        if (screenData != null) {
+            serviceIntent.putExtra("resultCode", resultCode);
+            serviceIntent.putExtra("data", screenData);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -69,7 +71,7 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_SMS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startService();
+                startSmsService(null, 0);
             } else {
                 Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
             }
@@ -80,14 +82,11 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
-            try {
-                mediaProjection = mpManager.getMediaProjection(resultCode, data);
-                if (mediaProjection != null) {
-                    Toast.makeText(this, "Скриншоты разрешены!", Toast.LENGTH_SHORT).show();
-                }
-            } catch (Exception e) {
-                Toast.makeText(this, "Ошибка скриншота", Toast.LENGTH_SHORT).show();
-            }
+            Toast.makeText(this, "Скриншоты разрешены!", Toast.LENGTH_SHORT).show();
+            startSmsService(data, resultCode);
+        } else if (requestCode == REQUEST_CODE_SCREENSHOT) {
+            Toast.makeText(this, "Разрешение на скриншоты не выдано. Сервис запущен без скриншотов.", Toast.LENGTH_LONG).show();
+            startSmsService(null, 0);
         }
     }
 }
