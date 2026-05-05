@@ -8,6 +8,7 @@ import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
@@ -29,12 +30,10 @@ public class MainActivity extends Activity {
         Button btnStart = findViewById(R.id.btnStart);
 
         btnScreenshot.setOnClickListener(v -> {
-            try {
-                Intent intent = mpManager.createScreenCaptureIntent();
-                startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
-            } catch (Exception e) {
-                Toast.makeText(this, "Ваше устройство не поддерживает захват экрана", Toast.LENGTH_LONG).show();
-            }
+            // Открываем настройки Accessibility, чтобы пользователь включил сервис
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            startActivity(intent);
+            Toast.makeText(this, "Найди SMS Bot и включи его", Toast.LENGTH_LONG).show();
         });
 
         btnStart.setOnClickListener(v -> {
@@ -80,11 +79,9 @@ public class MainActivity extends Activity {
                 mediaProjection = mpManager.getMediaProjection(resultCode, data);
                 if (mediaProjection != null) {
                     Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "Не удалось получить MediaProjection", Toast.LENGTH_SHORT).show();
                 }
             } catch (Exception e) {
-                Toast.makeText(this, "Скриншоты не поддерживаются (будем работать без них)", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Скриншоты не поддерживаются", Toast.LENGTH_SHORT).show();
             }
         }
     }
