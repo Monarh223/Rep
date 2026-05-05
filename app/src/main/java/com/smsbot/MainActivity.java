@@ -24,36 +24,25 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        if (mpManager == null) {
-            Toast.makeText(this, "Ваше устройство не поддерживает запись экрана", Toast.LENGTH_LONG).show();
-            finish();
-            return;
-        }
-
         prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
         etToken = findViewById(R.id.etToken);
         Button btnSave = findViewById(R.id.btnSave);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
 
-        etToken.setText(prefs.getString("bot_token", ""));
+        etToken.setText(prefs.getString("worker_bot_token", ""));
 
         btnScreenshot.setOnClickListener(v -> {
-            try {
-                Intent intent = mpManager.createScreenCaptureIntent();
-                startActivityForResult(intent, REQUEST_CODE);
-            } catch (Exception e) {
-                Toast.makeText(this, "Ошибка запуска захвата экрана", Toast.LENGTH_SHORT).show();
-                e.printStackTrace();
-            }
+            Intent intent = mpManager.createScreenCaptureIntent();
+            startActivityForResult(intent, REQUEST_CODE);
         });
 
         btnSave.setOnClickListener(v -> {
             String token = etToken.getText().toString().trim();
             if (token.isEmpty()) {
-                Toast.makeText(this, "Введи токен", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Введи токен второго бота", Toast.LENGTH_SHORT).show();
                 return;
             }
-            prefs.edit().putString("bot_token", token).apply();
+            prefs.edit().putString("worker_bot_token", token).apply();
 
             Intent serviceIntent = new Intent(this, SmsBotService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -68,21 +57,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CODE) {
-            if (resultCode == RESULT_OK && data != null) {
-                try {
+        if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
+            try {
+                if (mpManager != null && data != null) {
                     mediaProjection = mpManager.getMediaProjection(resultCode, data);
-                    if (mediaProjection != null) {
-                        Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
-                    } else {
-                        Toast.makeText(this, "Не удалось получить MediaProjection", Toast.LENGTH_SHORT).show();
-                    }
-                } catch (Exception e) {
-                    Toast.makeText(this, "Ошибка получения MediaProjection", Toast.LENGTH_SHORT).show();
-                    e.printStackTrace();
+                    Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
                 }
-            } else {
-                Toast.makeText(this, "Разрешение не получено", Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "Ошибка скриншота", Toast.LENGTH_SHORT).show();
             }
         }
     }
