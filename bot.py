@@ -16,7 +16,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEFAULT_ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
-RAILWAY_PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_URL", "")
+RAILWAY_PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_URL", "https://rep-production-730f.up.railway.app")
 WEBHOOK_PATH = "/webhook"
 
 bot = Bot(token=BOT_TOKEN)
