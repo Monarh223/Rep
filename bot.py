@@ -90,8 +90,7 @@ async def callback_handler(callback: CallbackQuery):
     cmd = callback.data
 
     if cmd == "worklook":
-        if uid != get_admin_id():
-            return
+        if uid != get_admin_id(): return
         if callback.message.chat.type in ["group", "supergroup"]:
             data["target_group"] = callback.message.chat.id
             save_json(DATA_FILE, data)
@@ -100,8 +99,7 @@ async def callback_handler(callback: CallbackQuery):
             await callback.message.reply("❌ Эту команду нужно выполнять в группе")
 
     elif cmd == "stoplook":
-        if uid != get_admin_id():
-            return
+        if uid != get_admin_id(): return
         data["target_group"] = None
         save_json(DATA_FILE, data)
         await callback.message.reply("🛑 Слежение отключено")
@@ -120,7 +118,7 @@ async def callback_handler(callback: CallbackQuery):
                         f"📊 Статистика:\n"
                         f"├ Всего: {total}\n"
                         f"├ ✅ Успешно: {success}\n"
-                        f"├ ❌ Ошибок: {failed}\n"
+                        f"├ ❌ Сбой: {failed}\n"
                         f"└ ⏳ В ожидании: {pending}"
                     )
 
@@ -140,15 +138,14 @@ async def callback_handler(callback: CallbackQuery):
                     total = len(tasks)
                     success = sum(1 for t in tasks if t["status"] == "success")
                     failed = sum(1 for t in tasks if t["status"] == "failed")
-                    text = f"📋 Отчёт за {today_str}:\n├ Всего: {total}\n├ ✅ Успешно: {success}\n├ ❌ Ошибок: {failed}\n\n"
+                    text = f"📋 Отчёт за {today_str}:\n├ Всего: {total}\n├ ✅ Успешно: {success}\n├ ❌ Сбой: {failed}\n\n"
                     for t in tasks[:10]:
-                        icon = "✅" if t["status"] == "success" else "❌" if t["status"] == "failed" else "⏳"
+                        icon = "✅" if t["status"] == "success" else "❌"
                         text += f"{icon} {t['phone']} — {t['template'][:30]}\n"
                     await callback.message.reply(text)
 
     elif cmd == "report":
-        if uid != get_admin_id():
-            return
+        if uid != get_admin_id(): return
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
         today_str = date.today().isoformat()
         async with aiohttp.ClientSession() as session:
@@ -158,10 +155,12 @@ async def callback_handler(callback: CallbackQuery):
             ) as resp:
                 if resp.status == 200:
                     tasks = await resp.json()
+                    if not tasks:
+                        await callback.message.reply("Нет данных")
+                        return
                     total = len(tasks)
                     success = sum(1 for t in tasks if t["status"] == "success")
                     failed = sum(1 for t in tasks if t["status"] == "failed")
-                    # За сегодня
                     today_tasks = [t for t in tasks if t["created_at"].startswith(today_str)]
                     today_total = len(today_tasks)
                     today_success = sum(1 for t in today_tasks if t["status"] == "success")
@@ -169,21 +168,18 @@ async def callback_handler(callback: CallbackQuery):
 
                     text = (
                         f"📊 Детальный отчёт:\n\n"
-                        f"За всё время:\n├ Всего: {total}\n├ ✅ {success}\n└ ❌ {failed}\n\n"
-                        f"За сегодня ({today_str}):\n├ Всего: {today_total}\n├ ✅ {today_success}\n└ ❌ {today_failed}\n\n"
+                        f"За всё время:\n├ Всего: {total}\n├ ✅ {success}\n└ ❌ Сбой: {failed}\n\n"
+                        f"За сегодня ({today_str}):\n├ Всего: {today_total}\n├ ✅ {today_success}\n└ ❌ Сбой: {today_failed}\n\n"
                         f"Последние 10 задач:\n"
                     )
                     for t in tasks[:10]:
-                        icon = "✅" if t["status"] == "success" else "❌" if t["status"] == "failed" else "⏳"
-                        status_text = ""
-                        if t["status"] == "failed":
-                            status_text = " — Не доставлено"
+                        icon = "✅" if t["status"] == "success" else "❌"
+                        status_text = " — Сбой (Не доставлено)" if t["status"] == "failed" else ""
                         text += f"{icon} {t['phone']} — {t['template'][:30]}{status_text}\n"
                     await callback.message.reply(text)
 
     elif cmd == "resetstats":
-        if uid != get_admin_id():
-            return
+        if uid != get_admin_id(): return
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
         async with aiohttp.ClientSession() as session:
             async with session.delete(f"{SUPABASE_URL}/rest/v1/tasks?status=neq.null", headers=headers) as resp:
@@ -197,19 +193,17 @@ async def callback_handler(callback: CallbackQuery):
         await callback.message.reply("🟢 Бот работает")
 
     elif cmd == "settings":
-        if uid != get_admin_id():
-            return
+        if uid != get_admin_id(): return
         text = f"⚙️ Настройки:\n• Целевая группа: {data.get('target_group', 'не задана')}\n• Админ ID: {get_admin_id()}"
         await callback.message.reply(text)
 
     elif cmd == "setadmin":
         await callback.message.reply("Используй команду: /setadmin [новый ID]")
 
-# Текстовые команды
+# ---------- Текстовые команды ----------
 @dp.message(Command("setadmin"))
 async def set_admin(message: Message):
-    if message.from_user.id != get_admin_id():
-        return
+    if message.from_user.id != get_admin_id(): return
     parts = message.text.split()
     if len(parts) < 2:
         await message.reply("Используй: /setadmin 123456789")
@@ -225,14 +219,13 @@ async def set_admin(message: Message):
 
 @dp.message(Command("worklook"))
 async def worklook(message: Message):
-    if message.from_user.id != get_admin_id():
-        return
+    if message.from_user.id != get_admin_id(): return
     if message.chat.type in ["group", "supergroup"]:
         data["target_group"] = message.chat.id
         save_json(DATA_FILE, data)
         await message.reply(f"👁 Слежу за группой: {message.chat.title}")
 
-# Обработка сообщений группы
+# ---------- Обработка сообщений группы (исправленный парсер) ----------
 @dp.message()
 async def handle_message(message: Message):
     if message.chat.id != data.get("target_group"):
@@ -240,15 +233,24 @@ async def handle_message(message: Message):
     text = message.text or ""
     if not text.strip() or text.startswith("/"):
         return
+
+    # Ищем ПЕРВЫЙ номер — он получатель
+    words = text.strip().split()
     phone = None
-    for word in text.split():
-        p = clean_phone(word)
+    for word in words:
+        p = clean_phone(word.strip().replace(",", "").replace(".", "").replace(")", "").replace("(", ""))
         if p:
             phone = p
             break
+
     if not phone:
         return
-    template = text.replace(phone, "").replace("+7", "").replace("8", "", 1).strip()
+
+    # Шаблон — ВСЁ сообщение, кроме первого вхождения номера
+    import re
+    # Убираем первое вхождение номера (с +7 или 8)
+    pattern = re.escape(phone) + r'|' + re.escape(phone[1:]) + r'|' + re.escape('8' + phone[2:])
+    template = re.sub(pattern, '', text, count=1).strip()
     if not template:
         template = "Сообщение"
 
@@ -266,7 +268,7 @@ async def handle_message(message: Message):
             else:
                 await message.reply("❌ Ошибка добавления задачи")
 
-# Фоновый опрос результатов
+# ---------- Фоновый опрос результатов ----------
 async def check_completed_tasks():
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     while True:
@@ -291,16 +293,10 @@ async def check_completed_tasks():
                                 continue
                             if screenshot_b64:
                                 screenshot_bytes = base64.b64decode(screenshot_b64)
-                                if status == "success":
-                                    caption = f"✅ Доставлено: {phone}"
-                                else:
-                                    caption = f"❌ Сбой (Не доставлено): {phone}"
+                                caption = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой (Не доставлено): {phone}"
                                 await bot.send_photo(target, photo=BufferedInputFile(screenshot_bytes, filename="screen.jpg"), caption=caption)
                             else:
-                                if status == "success":
-                                    text = f"✅ Доставлено: {phone}"
-                                else:
-                                    text = f"❌ Сбой (Не доставлено): {phone}"
+                                text = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой (Не доставлено): {phone}"
                                 await bot.send_message(target, text)
         except Exception as e:
             print(f"Check error: {e}")
