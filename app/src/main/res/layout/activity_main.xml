@@ -13,10 +13,18 @@
         android:text="🔧 Включить Accessibility" />
 
     <Button
+        android:id="@+id/btnStart"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🚀 Запустить сервис"
+        android:layout_marginTop="10dp" />
+
+    <Button
         android:id="@+id/btnScreenshot"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="📸 Разрешить скриншоты и запустить сервис" />
+        android:text="📸 Разрешить скриншоты"
+        android:layout_marginTop="10dp" />
 
     <Button
         android:id="@+id/btnSaveLog"
