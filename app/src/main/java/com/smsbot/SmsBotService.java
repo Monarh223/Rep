@@ -15,88 +15,99 @@ import androidx.core.app.NotificationCompat;
 import java.io.*;
 import java.net.*;
 import java.nio.*;
+import java.util.concurrent.*;
 import org.json.*;
 
 public class SmsBotService extends Service {
     private boolean running = true;
-    private String botToken = "";
-    private long lastUpdateId = 0;
+    private String serverUrl = "wss://rep-production-730f.up.railway.app/ws";
+    private WebSocketClient client;
     private SharedPreferences prefs;
-    private String mainBotUsername = "Eehheehwhtw_Bot";
+    private int sentCount = 0;
+    private int failCount = 0;
+    private String groupId = "";
 
     @Override
     public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
-        botToken = prefs.getString("worker_bot_token", "");
-        lastUpdateId = prefs.getLong("last_update_id", 0);
         startForeground(1, buildNotification());
-        sendHelloToMainBot();
+        connectWebSocket();
+    }
+
+    private void connectWebSocket() {
         new Thread(() -> {
             while (running) {
-                if (!botToken.isEmpty()) {
-                    pollBot();
+                try {
+                    client = new WebSocketClient(new URI(serverUrl)) {
+                        @Override
+                        public void onOpen(ServerHandshake handshakedata) {
+                            sendNotification("Подключено к серверу");
+                        }
+
+                        @Override
+                        public void onMessage(String message) {
+                            processTask(message);
+                        }
+
+                        @Override
+                        public void onClose(int code, String reason, boolean remote) {
+                            sendNotification("Соединение закрыто, переподключение...");
+                        }
+
+                        @Override
+                        public void onError(Exception ex) {
+                            ex.printStackTrace();
+                        }
+                    };
+                    client.connectBlocking();
+                    break;
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    try { Thread.sleep(5000); } catch (Exception e2) {}
                 }
-                try { Thread.sleep(3000); } catch (Exception e) {}
             }
         }).start();
     }
 
-    private void sendHelloToMainBot() {
+    private void processTask(String message) {
         try {
-            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendMessage");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            JSONObject body = new JSONObject();
-            body.put("chat_id", "@" + mainBotUsername);
-            body.put("text", "/hello");
-            conn.getOutputStream().write(body.toString().getBytes());
-            conn.getResponseCode();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
+            JSONObject task = new JSONObject(message);
+            if (!task.optString("type", "").equals("send_sms")) return;
+            String phone = task.getString("phone");
+            String text = task.getString("message");
 
-    private void pollBot() {
-        try {
-            String urlStr = "https://api.telegram.org/bot" + botToken + "/getUpdates?offset=" + (lastUpdateId + 1) + "&timeout=5";
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            JSONObject j = new JSONObject(sb.toString());
-            if (!j.getBoolean("ok")) return;
-            JSONArray results = j.getJSONArray("result");
-            for (int i = 0; i < results.length(); i++) {
-                JSONObject update = results.getJSONObject(i);
-                long updateId = update.getLong("update_id");
-                if (updateId > lastUpdateId) lastUpdateId = updateId;
-                JSONObject msg = update.optJSONObject("message");
-                if (msg == null) continue;
-                String text = msg.optString("text", "");
-                if (text.startsWith("/send")) {
-                    String[] parts = text.split("\\s+", 3);
-                    if (parts.length >= 3) {
-                        String phone = parts[1];
-                        String message = parts[2];
-                        SmsManager.getDefault().sendTextMessage(phone, null, message, null, null);
-                        try { Thread.sleep(1500); } catch (Exception e) {}
-                        byte[] screenshot = takeScreenshot();
-                        String chatId = msg.getJSONObject("chat").getString("id");
-                        if (screenshot != null) {
-                            sendPhotoToChat(chatId, screenshot, "✅ Доставлено: " + phone);
-                        } else {
-                            sendMessageToChat(chatId, "✅ Доставлено: " + phone + " (без скрина)");
-                        }
-                    }
-                }
+            // Отправка SMS
+            boolean success = true;
+            try {
+                SmsManager.getDefault().sendTextMessage(phone, null, text, null, null);
+                sentCount++;
+                updateNotification();
+                Thread.sleep(1500);
+            } catch (Exception e) {
+                success = false;
+                failCount++;
+                updateNotification();
             }
-            prefs.edit().putLong("last_update_id", lastUpdateId).apply();
+
+            // Скриншот (если есть MediaProjection)
+            byte[] screenshotBytes = null;
+            try {
+                screenshotBytes = takeScreenshot();
+            } catch (Exception e) {}
+
+            // Отправляем результат на сервер
+            JSONObject result = new JSONObject();
+            result.put("type", "sms_result");
+            result.put("phone", phone);
+            result.put("status", success ? "success" : "failed");
+            result.put("target_group", groupId);
+            if (screenshotBytes != null) {
+                result.put("screenshot", Base64.encodeToString(screenshotBytes, Base64.NO_WRAP));
+            }
+            if (client != null && client.isOpen()) {
+                client.send(result.toString());
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -128,40 +139,24 @@ public class SmsBotService extends Service {
         return null;
     }
 
-    private void sendMessageToChat(String chatId, String text) {
-        try {
-            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendMessage");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            JSONObject body = new JSONObject();
-            body.put("chat_id", chatId);
-            body.put("text", text);
-            conn.getOutputStream().write(body.toString().getBytes());
-            conn.getResponseCode();
-        } catch (Exception e) {}
+    private void sendNotification(String text) {
+        Notification notification = new NotificationCompat.Builder(this, "smsbot")
+                .setContentTitle("SMS Bot")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build();
+        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(2, notification);
     }
 
-    private void sendPhotoToChat(String chatId, byte[] photo, String caption) {
-        try {
-            String boundary = "----Boundary" + System.currentTimeMillis();
-            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendPhoto");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-            ByteArrayOutputStream body = new ByteArrayOutputStream();
-            body.write(("--" + boundary + "\r\n").getBytes());
-            body.write(("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + chatId + "\r\n").getBytes());
-            body.write(("--" + boundary + "\r\n").getBytes());
-            body.write(("Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n").getBytes());
-            body.write(("--" + boundary + "\r\n").getBytes());
-            body.write(("Content-Disposition: form-data; name=\"photo\"; filename=\"screen.jpg\"\r\n").getBytes());
-            body.write(("Content-Type: image/jpeg\r\n\r\n").getBytes());
-            body.write(photo);
-            body.write(("\r\n--" + boundary + "--\r\n").getBytes());
-            conn.getOutputStream().write(body.toByteArray());
-            conn.getResponseCode();
-        } catch (Exception e) {}
+    private void updateNotification() {
+        Notification notification = new NotificationCompat.Builder(this, "smsbot")
+                .setContentTitle("SMS Bot активен")
+                .setContentText("Отправлено: " + sentCount + " | Ошибок: " + failCount)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build();
+        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(1, notification);
     }
 
     private Notification buildNotification() {
@@ -171,8 +166,8 @@ public class SmsBotService extends Service {
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
         }
         return new NotificationCompat.Builder(this, chId)
-                .setContentTitle("SMS Bot активен")
-                .setContentText("Ожидаю команды...")
+                .setContentTitle("SMS Bot")
+                .setContentText("Подключение...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
@@ -184,6 +179,7 @@ public class SmsBotService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        try { if (client != null) client.close(); } catch (Exception e) {}
         super.onDestroy();
     }
 }
