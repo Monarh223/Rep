@@ -8,25 +8,17 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEFAULT_ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
-RAILWAY_PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_URL", "").rstrip("/")
-WEBHOOK_PATH = "/webhook"
-
-if not RAILWAY_PUBLIC_URL:
-    print("❌ Не задан RAILWAY_PUBLIC_URL! Бот не запустится.")
-    exit(1)
+WORKER_BOT_TOKEN = os.getenv("WORKER_BOT_TOKEN")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 DATA_FILE = "data.json"
-QUEUE_FILE = "queue.json"
 
 def load_json(path, default):
     if Path(path).exists():
@@ -38,14 +30,9 @@ def save_json(path, obj):
 
 data = load_json(DATA_FILE, {
     "target_group": None,
-    "admin_chat_id": DEFAULT_ADMIN_CHAT_ID,
+    "phone_chat_id": None,  # chat_id второго бота
     "stats": {"total": 0, "success": 0, "failed": 0, "pending": 0, "history": []}
 })
-
-queue = load_json(QUEUE_FILE, [])
-
-def get_admin_id():
-    return data.get("admin_chat_id", DEFAULT_ADMIN_CHAT_ID)
 
 def clean_phone(raw):
     digits = ''.join(c for c in raw if c.isdigit())
@@ -55,19 +42,38 @@ def clean_phone(raw):
         return "+7" + digits
     return None
 
-# ---------- команды ----------
+async def send_to_worker(phone, template):
+    """Отправка команды второму боту (на телефон)"""
+    if not data.get("phone_chat_id"):
+        return False
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": data["phone_chat_id"],
+        "text": f"/send {phone} {template}"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload) as resp:
+            return resp.status == 200
+
+# Регистрация телефона
+@dp.message(Command("hello"))
+async def hello(message: Message):
+    data["phone_chat_id"] = message.chat.id
+    save_json(DATA_FILE, data)
+    await message.reply("✅ Телефон зарегистрирован")
+
 @dp.message(Command("worklook"))
 async def worklook(message: Message):
-    if message.from_user.id != get_admin_id():
+    if message.from_user.id != ADMIN_CHAT_ID:
         return
     if message.chat.type in ["group", "supergroup"]:
         data["target_group"] = message.chat.id
         save_json(DATA_FILE, data)
-        await message.reply(f"👁️ Слежу за группой: {message.chat.title}")
+        await message.reply(f"👁 Слежу за группой: {message.chat.title}")
 
 @dp.message(Command("stoplook"))
 async def stoplook(message: Message):
-    if message.from_user.id != get_admin_id():
+    if message.from_user.id != ADMIN_CHAT_ID:
         return
     data["target_group"] = None
     save_json(DATA_FILE, data)
@@ -84,44 +90,26 @@ async def stats(message: Message):
 
 @dp.message(Command("resetstats"))
 async def resetstats(message: Message):
-    if message.from_user.id != get_admin_id():
+    if message.from_user.id != ADMIN_CHAT_ID:
         return
     data["stats"] = {"total": 0, "success": 0, "failed": 0, "pending": 0, "history": []}
     save_json(DATA_FILE, data)
-    await message.reply("♻️ Статистика сброшена")
+    await message.reply("♻ Сброшено")
 
 @dp.message(Command("get_apk"))
 async def get_apk(message: Message):
     await message.reply("📱 Скачай APK: https://github.com/Monarh223/Rep/releases")
 
-@dp.message(Command("ping"))
-async def ping(message: Message):
-    await message.reply("🟢 Бот работает")
-
-@dp.message(Command("mychatid"))
-async def mychatid(message: Message):
-    await message.reply(f"Твой Chat ID: `{message.chat.id}`", parse_mode="Markdown")
-
-# очередь для телефона
-@dp.message(Command("get_task"))
-async def get_task(message: Message):
-    if not queue:
-        return
-    cmd = queue.pop(0)
-    save_json(QUEUE_FILE, queue)
-    await message.reply(f"/send {cmd['phone']} {cmd['template']}")
-
-# обработка заказов в группе
+# Обработка сообщений в группе
 @dp.message()
 async def handle_message(message: Message):
     if message.chat.id == data.get("target_group"):
-        text = message.text or message.caption or ""
+        text = message.text or ""
         if not text.strip() or text.startswith("/"):
             return
-        words = text.strip().split()
         phone = None
-        for word in words:
-            p = clean_phone(word.strip().replace(",", "").replace(".", ""))
+        for word in text.split():
+            p = clean_phone(word)
             if p:
                 phone = p
                 break
@@ -129,86 +117,43 @@ async def handle_message(message: Message):
             return
         template = text.replace(phone, "").replace("+7", "").replace("8", "", 1).strip()
         if not template:
-            parts = text.split()
-            try:
-                idx = next(i for i, w in enumerate(parts) if clean_phone(w))
-                template = " ".join(parts[idx+1:]) if idx+1 < len(parts) else "Сообщение"
-            except:
-                template = "Сообщение"
-        queue.append({
-            "phone": phone,
-            "template": template,
-            "time": datetime.now().strftime("%H:%M:%S")
-        })
-        save_json(QUEUE_FILE, queue)
-        await message.reply(f"🔄 В очереди\n📱 {phone}\n📝 {template[:100]}")
+            template = "Сообщение"
+
+        success = await send_to_worker(phone, template)
+        if success:
+            await message.reply(f"✅ Команда отправлена на телефон: {phone}")
+        else:
+            await message.reply("❌ Телефон не подключён. Убедитесь, что APK запущен и отправил /hello")
+
         entry = {"phone": phone, "template": template, "time": datetime.now().strftime("%H:%M:%S"), "status": "pending"}
         data["stats"]["total"] += 1
         data["stats"]["pending"] += 1
         data["stats"]["history"].append(entry)
         save_json(DATA_FILE, data)
-        return
 
-    # ответы от телефона (фото / текст)
-    if message.chat.type == "private":
-        if message.photo:
-            caption = message.caption or ""
-            phone = None
-            for word in caption.split():
-                p = clean_phone(word)
-                if p:
-                    phone = p
+    # Приём скриншотов от телефона
+    if message.chat.id == data.get("phone_chat_id") and message.photo:
+        caption = message.caption or ""
+        phone = None
+        for word in caption.split():
+            p = clean_phone(word)
+            if p:
+                phone = p
+                break
+        if phone:
+            for h in reversed(data["stats"]["history"]):
+                if h["phone"] == phone and h["status"] == "pending":
+                    h["status"] = "success"
+                    data["stats"]["pending"] -= 1
+                    data["stats"]["success"] += 1
+                    save_json(DATA_FILE, data)
                     break
-            if phone:
-                for h in reversed(data["stats"]["history"]):
-                    if h["phone"] == phone and h["status"] == "pending":
-                        h["status"] = "success"
-                        data["stats"]["pending"] -= 1
-                        data["stats"]["success"] += 1
-                        save_json(DATA_FILE, data)
-                        break
-                if data.get("target_group"):
-                    await bot.send_photo(
-                        data["target_group"],
-                        photo=message.photo[-1].file_id,
-                        caption=f"✅ Доставлено: {phone}"
-                    )
-        elif message.text and message.text.startswith("✅ Доставлено:"):
-            parts = message.text.split(":")
-            if len(parts) > 1:
-                phone = clean_phone(parts[1].strip())
-                if phone:
-                    for h in reversed(data["stats"]["history"]):
-                        if h["phone"] == phone and h["status"] == "pending":
-                            h["status"] = "success"
-                            data["stats"]["pending"] -= 1
-                            data["stats"]["success"] += 1
-                            save_json(DATA_FILE, data)
-                            break
-                    if data.get("target_group"):
-                        await bot.send_message(data["target_group"], f"✅ Доставлено: {phone}\n⚠ Без скрина")
-
-# ---------- Webhook setup ----------
-async def on_startup(bot: Bot):
-    webhook_url = f"{RAILWAY_PUBLIC_URL}{WEBHOOK_PATH}"
-    await bot.set_webhook(webhook_url)
-    print(f"Webhook установлен: {webhook_url}")
+            if data.get("target_group"):
+                await bot.send_photo(data["target_group"], message.photo[-1].file_id,
+                                     caption=f"✅ Доставлено: {phone}")
 
 async def main():
-    app = web.Application()
-    handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    handler.register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-
-    await on_startup(bot)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", "8080"))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-    await asyncio.Event().wait()
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
