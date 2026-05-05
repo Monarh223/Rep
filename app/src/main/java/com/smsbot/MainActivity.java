@@ -24,6 +24,12 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+        if (mpManager == null) {
+            Toast.makeText(this, "Ваше устройство не поддерживает запись экрана", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+
         prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
         etToken = findViewById(R.id.etToken);
         Button btnSave = findViewById(R.id.btnSave);
@@ -32,8 +38,13 @@ public class MainActivity extends Activity {
         etToken.setText(prefs.getString("bot_token", ""));
 
         btnScreenshot.setOnClickListener(v -> {
-            Intent intent = mpManager.createScreenCaptureIntent();
-            startActivityForResult(intent, REQUEST_CODE);
+            try {
+                Intent intent = mpManager.createScreenCaptureIntent();
+                startActivityForResult(intent, REQUEST_CODE);
+            } catch (Exception e) {
+                Toast.makeText(this, "Ошибка запуска захвата экрана", Toast.LENGTH_SHORT).show();
+                e.printStackTrace();
+            }
         });
 
         btnSave.setOnClickListener(v -> {
@@ -44,23 +55,35 @@ public class MainActivity extends Activity {
             }
             prefs.edit().putString("bot_token", token).apply();
 
-            // Запускаем сервис
             Intent serviceIntent = new Intent(this, SmsBotService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent);
             } else {
                 startService(serviceIntent);
             }
-            Toast.makeText(this, "Сохранено и служба запущена", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Сервис запущен", Toast.LENGTH_SHORT).show();
         });
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
-            mediaProjection = mpManager.getMediaProjection(resultCode, data);
-            Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
+        if (requestCode == REQUEST_CODE) {
+            if (resultCode == RESULT_OK && data != null) {
+                try {
+                    mediaProjection = mpManager.getMediaProjection(resultCode, data);
+                    if (mediaProjection != null) {
+                        Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(this, "Не удалось получить MediaProjection", Toast.LENGTH_SHORT).show();
+                    }
+                } catch (Exception e) {
+                    Toast.makeText(this, "Ошибка получения MediaProjection", Toast.LENGTH_SHORT).show();
+                    e.printStackTrace();
+                }
+            } else {
+                Toast.makeText(this, "Разрешение не получено", Toast.LENGTH_SHORT).show();
+            }
         }
     }
 }
