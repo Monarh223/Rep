@@ -4,29 +4,33 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 public class MainActivity extends Activity {
+    private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
+    private MediaProjectionManager mpManager;
+    public static MediaProjection mediaProjection;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
         Button btnStart = findViewById(R.id.btnStart);
 
         btnScreenshot.setOnClickListener(v -> {
-            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivity(intent);
-            Toast.makeText(this, "Найди SMS Bot и включи его", Toast.LENGTH_LONG).show();
+            Intent intent = mpManager.createScreenCaptureIntent();
+            startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
         });
 
         btnStart.setOnClickListener(v -> {
@@ -40,7 +44,6 @@ public class MainActivity extends Activity {
             }
         });
 
-        // Запрос на хранилище для скриншотов
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -72,6 +75,21 @@ public class MainActivity extends Activity {
                 startService();
             } else {
                 Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
+            try {
+                mediaProjection = mpManager.getMediaProjection(resultCode, data);
+                if (mediaProjection != null) {
+                    Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
+                }
+            } catch (Exception e) {
+                Toast.makeText(this, "Ошибка скриншота", Toast.LENGTH_SHORT).show();
             }
         }
     }
