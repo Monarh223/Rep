@@ -8,6 +8,7 @@ import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
@@ -31,6 +32,14 @@ public class MainActivity extends Activity {
         Button btnStop = findViewById(R.id.btnStop);
 
         btnScreenshot.setOnClickListener(v -> {
+            // Проверяем, включён ли Accessibility сервис
+            if (!isAccessibilityServiceEnabled()) {
+                Toast.makeText(this, "Сначала включите SMS Bot в Специальных возможностях → Установленные службы", Toast.LENGTH_LONG).show();
+                Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+                startActivity(intent);
+                return;
+            }
+            // Запрашиваем MediaProjection
             Intent intent = mpManager.createScreenCaptureIntent();
             startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
         });
@@ -51,6 +60,18 @@ public class MainActivity extends Activity {
             stopService(serviceIntent);
             Toast.makeText(this, "Сервис остановлен", Toast.LENGTH_SHORT).show();
         });
+    }
+
+    private boolean isAccessibilityServiceEnabled() {
+        String service = getPackageName() + "/" + SmsAccessibilityService.class.getCanonicalName();
+        try {
+            int enabled = Settings.Secure.getInt(getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED);
+            if (enabled == 1) {
+                String settingValue = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                return settingValue != null && settingValue.contains(service);
+            }
+        } catch (Exception e) {}
+        return false;
     }
 
     private void startSmsService(Intent screenData, int resultCode) {
@@ -86,9 +107,12 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
             MediaProjection mp = mpManager.getMediaProjection(resultCode, data);
             if (mp != null) {
-                // Передаём MediaProjection в AccessibilityService
-                SmsAccessibilityService.getInstance().setMediaProjection(mp);
-                Toast.makeText(this, "Скриншоты готовы", Toast.LENGTH_SHORT).show();
+                if (SmsAccessibilityService.getInstance() != null) {
+                    SmsAccessibilityService.getInstance().setMediaProjection(mp);
+                    Toast.makeText(this, "Скриншоты готовы!", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "Ошибка: служба Accessibility не запущена", Toast.LENGTH_LONG).show();
+                }
             }
             startSmsService(data, resultCode);
         }
