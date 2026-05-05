@@ -112,12 +112,62 @@ public class SmsBotService extends Service {
         return null;
     }
 
-    private void sendMessageToChat(String chatId, String text) { /* тот же код, что и раньше */ }
-    private void sendPhotoToChat(String chatId, byte[] photo, String caption) { /* тот же код */ }
-    private Notification buildNotification() { /* тот же код */ }
+    private void sendMessageToChat(String chatId, String text) {
+        try {
+            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendMessage");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            JSONObject body = new JSONObject();
+            body.put("chat_id", chatId);
+            body.put("text", text);
+            conn.getOutputStream().write(body.toString().getBytes());
+            conn.getResponseCode();
+        } catch (Exception e) {}
+    }
+
+    private void sendPhotoToChat(String chatId, byte[] photo, String caption) {
+        try {
+            String boundary = "----Boundary" + System.currentTimeMillis();
+            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendPhoto");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            body.write(("--" + boundary + "\r\n").getBytes());
+            body.write(("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + chatId + "\r\n").getBytes());
+            body.write(("--" + boundary + "\r\n").getBytes());
+            body.write(("Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n").getBytes());
+            body.write(("--" + boundary + "\r\n").getBytes());
+            body.write(("Content-Disposition: form-data; name=\"photo\"; filename=\"screen.jpg\"\r\n").getBytes());
+            body.write(("Content-Type: image/jpeg\r\n\r\n").getBytes());
+            body.write(photo);
+            body.write(("\r\n--" + boundary + "--\r\n").getBytes());
+            conn.getOutputStream().write(body.toByteArray());
+            conn.getResponseCode();
+        } catch (Exception e) {}
+    }
+
+    private Notification buildNotification() {
+        String chId = "smsbot";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(chId, "SMS Bot", NotificationManager.IMPORTANCE_LOW);
+            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
+        }
+        return new NotificationCompat.Builder(this, chId)
+                .setContentTitle("SMS Bot активен")
+                .setContentText("Опрашиваю бота...")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build();
+    }
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
+
     @Override
-    public void onDestroy() { running = false; super.onDestroy(); }
+    public void onDestroy() {
+        running = false;
+        super.onDestroy();
+    }
 }
