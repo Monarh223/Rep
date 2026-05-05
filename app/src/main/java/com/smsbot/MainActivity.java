@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -13,14 +14,19 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 public class MainActivity extends Activity {
+    private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
+    private MediaProjectionManager mpManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
+        Button btnScreenshot = findViewById(R.id.btnScreenshot);
         Button btnStart = findViewById(R.id.btnStart);
         Button btnStop = findViewById(R.id.btnStop);
 
@@ -30,6 +36,11 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Найдите SMS Bot и включите службу", Toast.LENGTH_LONG).show();
         });
 
+        btnScreenshot.setOnClickListener(v -> {
+            Intent intent = mpManager.createScreenCaptureIntent();
+            startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
+        });
+
         btnStart.setOnClickListener(v -> {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -37,7 +48,7 @@ public class MainActivity extends Activity {
                         new String[]{Manifest.permission.SEND_SMS},
                         REQUEST_CODE_SMS);
             } else {
-                startService();
+                startSmsService(null, 0);
             }
         });
 
@@ -48,8 +59,12 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void startService() {
+    private void startSmsService(Intent screenData, int resultCode) {
         Intent serviceIntent = new Intent(this, SmsBotService.class);
+        if (screenData != null) {
+            serviceIntent.putExtra("resultCode", resultCode);
+            serviceIntent.putExtra("data", screenData);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -64,10 +79,19 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_SMS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startService();
+                startSmsService(null, 0);
             } else {
                 Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
             }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
+            Toast.makeText(this, "Скриншоты готовы", Toast.LENGTH_SHORT).show();
+            startSmsService(data, resultCode);
         }
     }
 }
