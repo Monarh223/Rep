@@ -10,7 +10,13 @@
         android:id="@+id/etToken"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="BOT TOKEN"
+        android:hint="BOT TOKEN" />
+
+    <EditText
+        android:id="@+id/etGroupId"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="GROUP CHAT ID (например -100...)"
         android:layout_marginTop="10dp" />
 
     <Button
