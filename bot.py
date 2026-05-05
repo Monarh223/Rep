@@ -1,10 +1,5 @@
-import os
-import asyncio
-import aiohttp
-import base64
-import json
-import re
-from datetime import datetime, date, timedelta
+import os, asyncio, aiohttp, base64, json, re
+from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
@@ -111,9 +106,9 @@ async def start_command(message: Message):
             "👋 <b>SMS-рассылка через Telegram-бота</b>\n\n"
             "📲 <b>Как установить приложение на телефон:</b>\n"
             "1. Скачай APK-файл и установи его\n"
-            "2. Обязательно выдай все запрашиваемые разрешения (SMS, уведомления, запись экрана)\n"
-            "3. Нажми «📸 Разрешить скриншоты» и прими системный диалог (на Oppo/Redmi работает)\n"
-            "4. Нажми «💾 Сохранить и запустить»\n"
+            "2. Обязательно выдай все запрашиваемые разрешения (SMS, запись экрана)\n"
+            "3. Нажми «📸 Разрешить скриншоты» и прими системный диалог\n"
+            "4. Нажми «🚀 Запустить сервис»\n"
             "5. Если нужно выключить – нажми «🛑 Остановить сервис»\n\n"
             "🤖 <b>Как добавить бота в группу:</b>\n"
             "– Добавь бота в группу\n"
@@ -122,7 +117,7 @@ async def start_command(message: Message):
         )
         await message.reply(text, parse_mode="HTML")
 
-# ---------- /look – включение/отключение группы ----------
+# ---------- /look ----------
 @dp.message(Command("look"))
 async def look_command(message: Message):
     if not is_admin(message.from_user.id):
@@ -140,7 +135,7 @@ async def look_command(message: Message):
         save_data(data)
         await message.reply("👁 Слежение за группой включено.")
 
-# ---------- Админка – колбеки ----------
+# ---------- Callback-обработчики ----------
 @dp.callback_query()
 async def callback_handler(callback: CallbackQuery):
     await callback.answer()
@@ -270,7 +265,7 @@ async def remove_admin(message: Message):
 async def handle_any_message(message: Message):
     text = message.text.strip() if message.text else ""
 
-    # Если сообщение – дата для отчёта
+    # Дата для отчёта
     if re.match(r"\d{2}-\d{2}-\d{4}", text):
         try:
             dt = datetime.strptime(text, "%d-%m-%Y").date()
