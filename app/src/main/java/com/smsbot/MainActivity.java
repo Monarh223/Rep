@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,6 +17,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
     private MediaProjectionManager mpManager;
+    public static MediaProjection mediaProjection;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,11 +84,13 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
-            Toast.makeText(this, "Скриншоты разрешены!", Toast.LENGTH_SHORT).show();
+            MediaProjection mp = mpManager.getMediaProjection(resultCode, data);
+            if (mp != null) {
+                // Передаём MediaProjection в AccessibilityService
+                SmsAccessibilityService.getInstance().setMediaProjection(mp);
+                Toast.makeText(this, "Скриншоты готовы", Toast.LENGTH_SHORT).show();
+            }
             startSmsService(data, resultCode);
-        } else if (requestCode == REQUEST_CODE_SCREENSHOT) {
-            Toast.makeText(this, "Разрешение на скриншоты не выдано. Сервис запущен без скриншотов.", Toast.LENGTH_LONG).show();
-            startSmsService(null, 0);
         }
     }
 }
