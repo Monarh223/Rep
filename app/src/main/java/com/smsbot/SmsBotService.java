@@ -115,10 +115,23 @@ public class SmsBotService extends Service {
         logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
 
         if (status.equals("success") && SmsAccessibilityService.getInstance() != null) {
+            Intent homeIntent = new Intent(Intent.ACTION_MAIN);
+            homeIntent.addCategory(Intent.CATEGORY_HOME);
+            homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
             logToFile("[ACCESS] Открываю SMS диалог...");
             SmsAccessibilityService.getInstance().openSmsDialog(phone);
-            logToFile("[SCREENSHOT] Жду 4 секунды...");
-            Thread.sleep(4000);
+            Thread.sleep(2000);
+
+            logToFile("[ACCESS] Возвращаюсь на домашний экран...");
+            startActivity(homeIntent);
+            Thread.sleep(1000);
+
+            logToFile("[ACCESS] Снова открываю SMS диалог...");
+            SmsAccessibilityService.getInstance().openSmsDialog(phone);
+            logToFile("[SCREENSHOT] Жду 3 секунды...");
+            Thread.sleep(3000);
+
             String screenshotBase64 = takeScreenshot();
             if (screenshotBase64 != null) {
                 logToFile("[SCREENSHOT] Успешно сделан, размер base64: " + screenshotBase64.length());
@@ -137,6 +150,7 @@ public class SmsBotService extends Service {
             } else {
                 logToFile("[SCREENSHOT] ОШИБКА: скриншот не сделан (base64 == null)");
             }
+            startActivity(homeIntent);
         } else {
             logToFile("[ERROR] Accessibility не доступен или SMS не отправлено");
         }
@@ -154,7 +168,6 @@ public class SmsBotService extends Service {
             DisplayMetrics metrics = new DisplayMetrics();
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             wm.getDefaultDisplay().getRealMetrics(metrics);
-
             int width = metrics.widthPixels;
             int height = metrics.heightPixels;
             int density = metrics.densityDpi;
