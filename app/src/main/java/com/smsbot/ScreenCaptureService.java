@@ -17,29 +17,7 @@ public class ScreenCaptureService extends AccessibilityService {
     }
 
     public byte[] takeScreenshot() {
-        // Способ 1: MediaProjection через главный поток
-        byte[] mp = takeScreenshotViaMediaProjection();
-        if (mp != null) return mp;
-
-        // Способ 2: screencap (работает на многих Samsung)
-        byte[] sc = takeScreenshotViaScreencap();
-        if (sc != null) return sc;
-
-        return null;
-    }
-
-    private byte[] takeScreenshotViaMediaProjection() {
-        if (MainActivity.mediaProjection == null) return null;
-        try {
-            SmsBotService.takeScreenshotWithMediaProjection(MainActivity.mediaProjection, this);
-            // Этот метод сложный, оставлю для доработки
-            return null;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private byte[] takeScreenshotViaScreencap() {
+        // Способ 1: screencap
         try {
             File screenshotFile = new File(getExternalFilesDir(null), "screenshot.png");
             Process process = Runtime.getRuntime().exec(new String[]{
