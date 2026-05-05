@@ -15,7 +15,6 @@ import androidx.core.app.NotificationCompat;
 import java.io.*;
 import java.net.*;
 import java.nio.*;
-import java.util.ArrayList;
 import org.json.*;
 
 public class SmsBotService extends Service {
@@ -62,14 +61,8 @@ public class SmsBotService extends Service {
 
         String status = "failed";
         try {
-            SmsManager sms = SmsManager.getDefault();
-            if (template.length() > 160) {
-                ArrayList<String> parts = sms.divideMessage(template);
-                sms.sendMultipartTextMessage(phone, null, parts, null, null);
-            } else {
-                sms.sendTextMessage(phone, null, template, null, null);
-            }
-            Thread.sleep(1500);
+            SmsManager.getDefault().sendTextMessage(phone, null, template, null, null);
+            Thread.sleep(1000);
             status = "success";
         } catch (Exception e) {
             e.printStackTrace();
@@ -77,9 +70,9 @@ public class SmsBotService extends Service {
 
         String screenshotBase64 = null;
         if (status.equals("success")) {
-            byte[] screenshotBytes = takeScreenshot();
-            if (screenshotBytes != null) {
-                screenshotBase64 = Base64.encodeToString(screenshotBytes, Base64.NO_WRAP);
+            byte[] screen = takeScreenshot();
+            if (screen != null) {
+                screenshotBase64 = Base64.encodeToString(screen, Base64.NO_WRAP);
             }
         }
 
@@ -101,6 +94,15 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
+        // Способ 1: MediaProjection
+        byte[] mp = screenshotViaMediaProjection();
+        if (mp != null) return mp;
+
+        // Способ 2: screencap shell
+        return screenshotViaShell();
+    }
+
+    private byte[] screenshotViaMediaProjection() {
         if (MainActivity.mediaProjection == null) return null;
         try {
             DisplayMetrics metrics = new DisplayMetrics();
@@ -132,6 +134,29 @@ public class SmsBotService extends Service {
         return null;
     }
 
+    private byte[] screenshotViaShell() {
+        try {
+            File file = new File(getExternalFilesDir(null), "screen.png");
+            Process process = Runtime.getRuntime().exec(new String[]{
+                    "sh", "-c", "screencap -p " + file.getAbsolutePath()
+            });
+            process.waitFor();
+            if (!file.exists()) return null;
+
+            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath());
+            file.delete();
+            if (bitmap == null) return null;
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+            bitmap.recycle();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     private Notification buildNotification() {
         String chId = "smsbot";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -140,7 +165,7 @@ public class SmsBotService extends Service {
         }
         return new NotificationCompat.Builder(this, chId)
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Опрос задач...")
+                .setContentText("Скриншоты включены")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
