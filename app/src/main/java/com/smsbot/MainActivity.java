@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
@@ -14,7 +16,10 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 public class MainActivity extends Activity {
+    private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
+    private MediaProjectionManager mpManager;
+    public static MediaProjection mediaProjection;
     private EditText etToken, etGroupId;
     private SharedPreferences prefs;
 
@@ -23,14 +28,21 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
         etToken = findViewById(R.id.etToken);
         etGroupId = findViewById(R.id.etGroupId);
         Button btnSave = findViewById(R.id.btnSave);
+        Button btnScreenshot = findViewById(R.id.btnScreenshot);
         Button btnStop = findViewById(R.id.btnStop);
 
         etToken.setText(prefs.getString("bot_token", ""));
         etGroupId.setText(prefs.getString("group_id", ""));
+
+        btnScreenshot.setOnClickListener(v -> {
+            Intent intent = mpManager.createScreenCaptureIntent();
+            startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
+        });
 
         btnSave.setOnClickListener(v -> {
             String token = etToken.getText().toString().trim();
@@ -39,7 +51,6 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "Введи токен и ID группы", Toast.LENGTH_SHORT).show();
                 return;
             }
-
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
                     != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this,
@@ -48,7 +59,6 @@ public class MainActivity extends Activity {
                 prefs.edit().putString("bot_token", token).putString("group_id", groupId).apply();
                 return;
             }
-
             prefs.edit().putString("bot_token", token).putString("group_id", groupId).apply();
             startService();
         });
@@ -79,6 +89,21 @@ public class MainActivity extends Activity {
                 startService();
             } else {
                 Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
+            try {
+                mediaProjection = mpManager.getMediaProjection(resultCode, data);
+                if (mediaProjection != null) {
+                    Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
+                }
+            } catch (Exception e) {
+                Toast.makeText(this, "Ошибка скриншота", Toast.LENGTH_SHORT).show();
             }
         }
     }
