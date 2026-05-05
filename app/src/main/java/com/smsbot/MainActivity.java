@@ -4,8 +4,6 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -15,33 +13,21 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 public class MainActivity extends Activity {
-    private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
-    private MediaProjectionManager mpManager;
-    public static MediaProjection mediaProjection;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-
-        Button btnScreenshot = findViewById(R.id.btnScreenshot);
+        Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnStart = findViewById(R.id.btnStart);
         Button btnStop = findViewById(R.id.btnStop);
 
-        btnScreenshot.setOnClickListener(v -> {
-            // Проверяем, включён ли Accessibility сервис
-            if (!isAccessibilityServiceEnabled()) {
-                Toast.makeText(this, "Сначала включите SMS Bot в Специальных возможностях → Установленные службы", Toast.LENGTH_LONG).show();
-                Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-                startActivity(intent);
-                return;
-            }
-            // Запрашиваем MediaProjection
-            Intent intent = mpManager.createScreenCaptureIntent();
-            startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
+        btnAccessibility.setOnClickListener(v -> {
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            startActivity(intent);
+            Toast.makeText(this, "Найдите SMS Bot и включите службу", Toast.LENGTH_LONG).show();
         });
 
         btnStart.setOnClickListener(v -> {
@@ -51,7 +37,7 @@ public class MainActivity extends Activity {
                         new String[]{Manifest.permission.SEND_SMS},
                         REQUEST_CODE_SMS);
             } else {
-                startSmsService(null, 0);
+                startService();
             }
         });
 
@@ -62,24 +48,8 @@ public class MainActivity extends Activity {
         });
     }
 
-    private boolean isAccessibilityServiceEnabled() {
-        String service = getPackageName() + "/" + SmsAccessibilityService.class.getCanonicalName();
-        try {
-            int enabled = Settings.Secure.getInt(getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED);
-            if (enabled == 1) {
-                String settingValue = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-                return settingValue != null && settingValue.contains(service);
-            }
-        } catch (Exception e) {}
-        return false;
-    }
-
-    private void startSmsService(Intent screenData, int resultCode) {
+    private void startService() {
         Intent serviceIntent = new Intent(this, SmsBotService.class);
-        if (screenData != null) {
-            serviceIntent.putExtra("resultCode", resultCode);
-            serviceIntent.putExtra("data", screenData);
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
@@ -94,27 +64,10 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_SMS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startSmsService(null, 0);
+                startService();
             } else {
                 Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
             }
-        }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
-            MediaProjection mp = mpManager.getMediaProjection(resultCode, data);
-            if (mp != null) {
-                if (SmsAccessibilityService.getInstance() != null) {
-                    SmsAccessibilityService.getInstance().setMediaProjection(mp);
-                    Toast.makeText(this, "Скриншоты готовы!", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, "Ошибка: служба Accessibility не запущена", Toast.LENGTH_LONG).show();
-                }
-            }
-            startSmsService(data, resultCode);
         }
     }
 }
