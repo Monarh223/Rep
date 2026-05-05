@@ -7,10 +7,10 @@
     android:gravity="center">
 
     <Button
-        android:id="@+id/btnScreenshot"
+        android:id="@+id/btnAccessibility"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="📸 Разрешить скриншоты" />
+        android:text="🔧 Включить Accessibility" />
 
     <Button
         android:id="@+id/btnStart"
