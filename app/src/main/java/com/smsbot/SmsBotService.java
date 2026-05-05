@@ -17,6 +17,8 @@ import java.net.*;
 import java.nio.*;
 import java.util.concurrent.*;
 import org.json.*;
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
 
 public class SmsBotService extends Service {
     private boolean running = true;
@@ -31,6 +33,7 @@ public class SmsBotService extends Service {
     public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences("smsbot", MODE_PRIVATE);
+        groupId = prefs.getString("group_id", "");
         startForeground(1, buildNotification());
         connectWebSocket();
     }
@@ -39,7 +42,8 @@ public class SmsBotService extends Service {
         new Thread(() -> {
             while (running) {
                 try {
-                    client = new WebSocketClient(new URI(serverUrl)) {
+                    URI uri = new URI(serverUrl);
+                    client = new WebSocketClient(uri) {
                         @Override
                         public void onOpen(ServerHandshake handshakedata) {
                             sendNotification("Подключено к серверу");
@@ -57,13 +61,13 @@ public class SmsBotService extends Service {
 
                         @Override
                         public void onError(Exception ex) {
-                            ex.printStackTrace();
+                            sendNotification("Ошибка: " + ex.getMessage());
                         }
                     };
                     client.connectBlocking();
                     break;
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    sendNotification("Ошибка подключения, повтор через 5с");
                     try { Thread.sleep(5000); } catch (Exception e2) {}
                 }
             }
@@ -77,7 +81,6 @@ public class SmsBotService extends Service {
             String phone = task.getString("phone");
             String text = task.getString("message");
 
-            // Отправка SMS
             boolean success = true;
             try {
                 SmsManager.getDefault().sendTextMessage(phone, null, text, null, null);
@@ -90,18 +93,15 @@ public class SmsBotService extends Service {
                 updateNotification();
             }
 
-            // Скриншот (если есть MediaProjection)
             byte[] screenshotBytes = null;
             try {
                 screenshotBytes = takeScreenshot();
             } catch (Exception e) {}
 
-            // Отправляем результат на сервер
             JSONObject result = new JSONObject();
             result.put("type", "sms_result");
             result.put("phone", phone);
             result.put("status", success ? "success" : "failed");
-            result.put("target_group", groupId);
             if (screenshotBytes != null) {
                 result.put("screenshot", Base64.encodeToString(screenshotBytes, Base64.NO_WRAP));
             }
