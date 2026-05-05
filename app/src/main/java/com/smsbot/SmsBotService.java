@@ -90,7 +90,6 @@ public class SmsBotService extends Service {
             e.printStackTrace();
         }
 
-        // Обновляем статус задачи
         JSONObject updateBody = new JSONObject();
         updateBody.put("status", status);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -103,13 +102,11 @@ public class SmsBotService extends Service {
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
         updateConn.getResponseCode();
 
-        // Если успешно и Accessibility доступен – открываем переписку и делаем скриншот
         if (status.equals("success") && SmsAccessibilityService.getInstance() != null) {
             SmsAccessibilityService.getInstance().openSmsDialog(phone);
-            Thread.sleep(4000); // ждём открытия переписки
+            Thread.sleep(4000);
             String screenshotBase64 = takeScreenshot();
             if (screenshotBase64 != null) {
-                // Добавляем скриншот к задаче
                 updateBody = new JSONObject();
                 updateBody.put("screenshot", screenshotBase64);
                 updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -125,6 +122,7 @@ public class SmsBotService extends Service {
         }
     }
 
+    // Метод скриншота с учётом rowStride / pixelStride (исправлен ChatGPT)
     private String takeScreenshot() {
         if (mediaProjection == null) return null;
         ImageReader reader = null;
@@ -133,32 +131,54 @@ public class SmsBotService extends Service {
         try {
             DisplayMetrics metrics = new DisplayMetrics();
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            wm.getDefaultDisplay().getRealMetrics(metrics);
-            int w = metrics.widthPixels, h = metrics.heightPixels;
-            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
-            vd = mediaProjection.createVirtualDisplay("scr", w, h, metrics.densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
-            Thread.sleep(500);
-            image = reader.acquireLatestImage();
-            if (image != null) {
-                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                bitmap.copyPixelsFromBuffer(buffer);
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-                image.close();
-                vd.release();
-                reader.close();
-                return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Display display = getDisplay();
+                if (display != null) {
+                    display.getRealMetrics(metrics);
+                } else {
+                    wm.getDefaultDisplay().getRealMetrics(metrics);
+                }
+            } else {
+                wm.getDefaultDisplay().getRealMetrics(metrics);
             }
+            int width = metrics.widthPixels;
+            int height = metrics.heightPixels;
+            int density = metrics.densityDpi;
+            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3);
+            vd = mediaProjection.createVirtualDisplay(
+                    "SMSBOT_SCREENSHOT", width, height, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader.getSurface(), null, null
+            );
+            for (int i = 0; i < 10; i++) {
+                Thread.sleep(300);
+                image = reader.acquireLatestImage();
+                if (image != null) break;
+            }
+            if (image == null) return null;
+            Image.Plane[] planes = image.getPlanes();
+            ByteBuffer buffer = planes[0].getBuffer();
+            int pixelStride = planes[0].getPixelStride();
+            int rowStride = planes[0].getRowStride();
+            int rowPadding = rowStride - pixelStride * width;
+            Bitmap bitmap = Bitmap.createBitmap(
+                    width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
+            );
+            bitmap.copyPixelsFromBuffer(buffer);
+            Bitmap croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+            bitmap.recycle();
+            croppedBitmap.recycle();
+            return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e("SMS_BOT", "Screenshot failed", e);
+            return null;
         } finally {
             try { if (image != null) image.close(); } catch (Exception ignored) {}
             try { if (vd != null) vd.release(); } catch (Exception ignored) {}
             try { if (reader != null) reader.close(); } catch (Exception ignored) {}
         }
-        return null;
     }
 
     private Notification buildNotification() {
