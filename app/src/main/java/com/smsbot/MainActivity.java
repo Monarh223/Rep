@@ -11,7 +11,7 @@ import android.os.Bundle;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextUtils;
+import androidx.core.content.ContextCompat;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
@@ -38,7 +38,7 @@ public class MainActivity extends Activity {
         });
 
         btnStart.setOnClickListener(v -> {
-            if (ContextUtils.checkSelfPermission(this, Manifest.permission.SEND_SMS)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
                     != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this,
                         new String[]{Manifest.permission.SEND_SMS},
