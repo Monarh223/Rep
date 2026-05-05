@@ -28,7 +28,21 @@ public class SmsBotService extends Service {
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
     private MediaProjection mediaProjection;
-    private boolean workerStarted = false;
+    private HandlerThread handlerThread;
+    private Handler handler;
+    private PowerManager.WakeLock wakeLock;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        // WakeLock, чтобы не засыпал на POCO
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SmsBot::WakeLock");
+        wakeLock.acquire(10*60*1000L); // 10 минут, потом продлим
+        handlerThread = new HandlerThread("SmsBotWorker");
+        handlerThread.start();
+        handler = new Handler(handlerThread.getLooper());
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -43,22 +57,24 @@ public class SmsBotService extends Service {
                 logToFile("[MEDIA] MediaProjection получен");
             }
         }
-        if (!workerStarted) {
-            workerStarted = true;
-            new Thread(() -> {
-                while (running) {
-                    try {
-                        checkAndProcessTasks();
-                    } catch (Exception e) {
-                        logToFile("[ERROR] Цикл задач: " + e.getMessage());
-                        e.printStackTrace();
-                    }
-                    try { Thread.sleep(2000); } catch (Exception e) {}
-                }
-            }).start();
-        }
+        handler.post(workerRunnable);
         return START_STICKY;
     }
+
+    private final Runnable workerRunnable = new Runnable() {
+        @Override
+        public void run() {
+            while (running) {
+                try {
+                    checkAndProcessTasks();
+                } catch (Exception e) {
+                    logToFile("[ERROR] Цикл задач: " + e.getMessage());
+                    e.printStackTrace();
+                }
+                try { Thread.sleep(2000); } catch (Exception e) {}
+            }
+        }
+    };
 
     private void checkAndProcessTasks() throws Exception {
         URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?status=eq.pending&order=created_at.asc&limit=1");
@@ -86,7 +102,6 @@ public class SmsBotService extends Service {
 
         logToFile("[TASK] Задача #" + taskId + " на номер " + phone);
 
-        // Отправка SMS с подтверждением через PendingIntent
         final String[] finalStatus = {"failed"};
         final CountDownLatch latch = new CountDownLatch(1);
 
@@ -115,7 +130,6 @@ public class SmsBotService extends Service {
             if (template.length() > 160) {
                 ArrayList<String> parts = sms.divideMessage(template);
                 sms.sendMultipartTextMessage(phone, null, parts, null, null);
-                // Для multipart сообщений PendingIntent не работает, считаем успехом
                 finalStatus[0] = "success";
                 latch.countDown();
             } else {
@@ -134,7 +148,6 @@ public class SmsBotService extends Service {
             unregisterReceiver(sentReceiver);
         }
 
-        // Обновляем статус задачи
         JSONObject updateBody = new JSONObject();
         updateBody.put("status", finalStatus[0]);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -148,7 +161,6 @@ public class SmsBotService extends Service {
         int patchCode = updateConn.getResponseCode();
         logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
 
-        // Если успешно и есть Accessibility + MediaProjection – делаем скриншот
         if (finalStatus[0].equals("success") && SmsAccessibilityService.getInstance() != null) {
             Intent homeIntent = new Intent(Intent.ACTION_MAIN);
             homeIntent.addCategory(Intent.CATEGORY_HOME);
@@ -193,7 +205,7 @@ public class SmsBotService extends Service {
 
     private String takeScreenshot() {
         if (mediaProjection == null) {
-            logToFile("[SCREENSHOT] ОШИБКА: MediaProjection is null. Сначала нажми 'Разрешить скриншоты'");
+            logToFile("[SCREENSHOT] ОШИБКА: MediaProjection is null");
             return null;
         }
         ImageReader reader = null;
@@ -203,44 +215,30 @@ public class SmsBotService extends Service {
             DisplayMetrics metrics = new DisplayMetrics();
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             wm.getDefaultDisplay().getRealMetrics(metrics);
-            int width = metrics.widthPixels;
-            int height = metrics.heightPixels;
-            int density = metrics.densityDpi;
+            int width = metrics.widthPixels, height = metrics.heightPixels, density = metrics.densityDpi;
             reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3);
-            vd = mediaProjection.createVirtualDisplay(
-                    "SMSBOT_SCREENSHOT", width, height, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    reader.getSurface(), null, null
-            );
-            logToFile("[SCREENSHOT] VirtualDisplay создан: " + width + "x" + height);
+            vd = mediaProjection.createVirtualDisplay("SMSBOT_SCREENSHOT", width, height, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
             for (int i = 0; i < 10; i++) {
                 Thread.sleep(300);
                 image = reader.acquireLatestImage();
                 if (image != null) break;
             }
-            if (image == null) {
-                logToFile("[SCREENSHOT] ОШИБКА: Image is null после 10 попыток");
-                return null;
-            }
+            if (image == null) return null;
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
             int pixelStride = planes[0].getPixelStride();
             int rowStride = planes[0].getRowStride();
             int rowPadding = rowStride - pixelStride * width;
-            Bitmap bitmap = Bitmap.createBitmap(
-                    width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
-            );
+            Bitmap bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888);
             bitmap.copyPixelsFromBuffer(buffer);
-            Bitmap croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height);
+            Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, width, height);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
-            bitmap.recycle();
-            croppedBitmap.recycle();
-            logToFile("[SCREENSHOT] Размер JPEG: " + baos.size() + " байт");
+            cropped.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+            bitmap.recycle(); cropped.recycle();
             return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
         } catch (Exception e) {
             logToFile("[SCREENSHOT] Ошибка: " + e.getMessage());
-            e.printStackTrace();
             return null;
         } finally {
             try { if (image != null) image.close(); } catch (Exception ignored) {}
@@ -269,7 +267,7 @@ public class SmsBotService extends Service {
         }
         return new NotificationCompat.Builder(this, chId)
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Отправка SMS и скриншотов...")
+                .setContentText("Обработка задач...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
@@ -281,6 +279,8 @@ public class SmsBotService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        if (handlerThread != null) handlerThread.quitSafely();
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         super.onDestroy();
     }
 }
