@@ -13,9 +13,15 @@ android {
         versionCode 1
         versionName "1.0"
     }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
 }
 
 dependencies {
     implementation 'androidx.core:core:1.10.0'
-    implementation 'com.jcraft:jsch:0.1.55'
+    implementation 'org.java-websocket:Java-WebSocket:1.5.3'
 }
