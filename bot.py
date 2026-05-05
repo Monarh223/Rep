@@ -1,4 +1,9 @@
-import os, asyncio, aiohttp, base64, json, re
+import os
+import asyncio
+import aiohttp
+import base64
+import json
+import re
 from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
@@ -259,6 +264,27 @@ async def remove_admin(message: Message):
         await message.reply(f"❌ Админ {rm_id} удалён.")
     else:
         await message.reply("Такого админа нет.")
+
+# ---------- /txtupload ----------
+@dp.message(Command("txtupload"))
+async def txt_upload(message: Message):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{SUPABASE_URL}/rest/v1/logs?select=log_text&order=created_at.desc&limit=10",
+            headers=headers
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data:
+                    log_text = "\n".join([entry["log_text"] for entry in reversed(data)])
+                    with open("log.txt", "w", encoding="utf-8") as f:
+                        f.write(log_text)
+                    await message.reply_document(FSInputFile("log.txt"))
+                else:
+                    await message.reply("Логов пока нет.")
+            else:
+                await message.reply("Ошибка получения логов.")
 
 # ---------- Обработка сообщений в группах ----------
 @dp.message()
