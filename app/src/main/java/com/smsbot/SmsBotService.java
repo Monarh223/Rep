@@ -2,64 +2,33 @@ package com.smsbot;
 
 import android.app.*;
 import android.content.*;
-import android.graphics.*;
-import android.hardware.display.*;
-import android.media.Image;
-import android.media.ImageReader;
-import android.media.projection.*;
 import android.os.*;
 import android.telephony.*;
-import android.util.*;
-import android.view.*;
 import androidx.core.app.NotificationCompat;
 import java.io.*;
 import java.net.*;
-import java.nio.*;
 import org.json.*;
 
 public class SmsBotService extends Service {
     private static final String SUPABASE_URL = "https://xusnqiovgqgrxxyikvxk.supabase.co";
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
-    private MediaProjection mediaProjection;
 
     @Override
     public void onCreate() {
         super.onCreate();
-    }
-
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(1, buildNotification());
-        if (intent != null && intent.hasExtra("resultCode") && intent.hasExtra("data")) {
-            int resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED);
-            Intent data = intent.getParcelableExtra("data");
-            MediaProjectionManager manager =
-                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-            if (manager != null) {
-                mediaProjection = manager.getMediaProjection(resultCode, data);
-                if (SmsAccessibilityService.getInstance() != null) {
-                    SmsAccessibilityService.getInstance().setMediaProjection(mediaProjection);
+        new Thread(() -> {
+            while (running) {
+                try {
+                    checkAndProcessTasks();
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
+                try { Thread.sleep(2000); } catch (Exception e) {}
             }
-        }
-        if (!workerStarted) {
-            workerStarted = true;
-            new Thread(() -> {
-                while (running) {
-                    try {
-                        checkAndProcessTasks();
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                    try { Thread.sleep(2000); } catch (Exception e) {}
-                }
-            }).start();
-        }
-        return START_STICKY;
+        }).start();
     }
-
-    private boolean workerStarted = false;
 
     private void checkAndProcessTasks() throws Exception {
         URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?status=eq.pending&order=created_at.asc&limit=1");
@@ -91,13 +60,13 @@ public class SmsBotService extends Service {
             } else {
                 sms.sendTextMessage(phone, null, template, null, null);
             }
-            Thread.sleep(1000);
+            Thread.sleep(1500);
             status = "success";
         } catch (Exception e) {
             e.printStackTrace();
         }
 
-        // Обновляем статус
+        // Обновляем статус задачи в Supabase
         JSONObject updateBody = new JSONObject();
         updateBody.put("status", status);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -110,7 +79,7 @@ public class SmsBotService extends Service {
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
         updateConn.getResponseCode();
 
-        // Если успешно – просим Accessibility открыть сообщения и сделать скриншот
+        // Если успешно – просим Accessibility открыть переписку и сделать скриншот
         if (status.equals("success") && SmsAccessibilityService.getInstance() != null) {
             SmsAccessibilityService.getInstance().setPendingPhone(phone);
         }
@@ -124,7 +93,7 @@ public class SmsBotService extends Service {
         }
         return new NotificationCompat.Builder(this, chId)
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Отправка SMS...")
+                .setContentText("Отправка SMS и скриншотов...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
