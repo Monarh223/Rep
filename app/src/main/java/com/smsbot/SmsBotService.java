@@ -137,7 +137,7 @@ public class SmsBotService extends Service {
     private byte[] screenshotViaShell() {
         try {
             File file = new File(getExternalFilesDir(null), "screen.png");
-            Process process = Runtime.getRuntime().exec(new String[]{
+            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
                     "sh", "-c", "screencap -p " + file.getAbsolutePath()
             });
             process.waitFor();
