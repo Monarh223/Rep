@@ -11,7 +11,7 @@ import android.os.Bundle;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import androidx.core.content.ContextUtils;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
@@ -29,13 +29,16 @@ public class MainActivity extends Activity {
         Button btnStart = findViewById(R.id.btnStart);
 
         btnScreenshot.setOnClickListener(v -> {
-            Intent intent = mpManager.createScreenCaptureIntent();
-            startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
+            try {
+                Intent intent = mpManager.createScreenCaptureIntent();
+                startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
+            } catch (Exception e) {
+                Toast.makeText(this, "Ваше устройство не поддерживает захват экрана", Toast.LENGTH_LONG).show();
+            }
         });
 
         btnStart.setOnClickListener(v -> {
-            // Проверяем разрешение на SMS
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
+            if (ContextUtils.checkSelfPermission(this, Manifest.permission.SEND_SMS)
                     != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this,
                         new String[]{Manifest.permission.SEND_SMS},
@@ -62,10 +65,9 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_SMS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Разрешение на SMS получено", Toast.LENGTH_SHORT).show();
                 startService();
             } else {
-                Toast.makeText(this, "Без разрешения SMS приложение не будет работать", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -78,9 +80,11 @@ public class MainActivity extends Activity {
                 mediaProjection = mpManager.getMediaProjection(resultCode, data);
                 if (mediaProjection != null) {
                     Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "Не удалось получить MediaProjection", Toast.LENGTH_SHORT).show();
                 }
             } catch (Exception e) {
-                Toast.makeText(this, "Ошибка скриншота", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Скриншоты не поддерживаются (будем работать без них)", Toast.LENGTH_LONG).show();
             }
         }
     }
