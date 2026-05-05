@@ -5,9 +5,11 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.widget.Button;
 import android.widget.Toast;
@@ -30,6 +32,16 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+
+        // Запрос на отключение оптимизации батареи (для POCO/MIUI)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, 100);
+            }
+        }
 
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
@@ -126,7 +138,6 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
             Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
-            // Перезапускаем сервис, чтобы передать MediaProjection
             startSmsService(data, resultCode);
         }
     }
