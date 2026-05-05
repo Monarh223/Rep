@@ -1,28 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="20dp"
-    android:gravity="center">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.smsbot">
 
-    <Button
-        android:id="@+id/btnScreenshot"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="📸 Разрешить скриншоты" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
-    <Button
-        android:id="@+id/btnStart"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="🚀 Запустить сервис"
-        android:layout_marginTop="10dp" />
+    <application
+        android:allowBackup="true"
+        android:label="SMS Bot"
+        android:supportsRtl="true"
+        android:requestLegacyExternalStorage="true">
 
-    <Button
-        android:id="@+id/btnStop"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="🛑 Остановить сервис"
-        android:layout_marginTop="10dp" />
-</LinearLayout>
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".SmsBotService"
+            android:foregroundServiceType="dataSync|mediaProjection"
+            android:exported="false" />
+
+    </application>
+</manifest>
