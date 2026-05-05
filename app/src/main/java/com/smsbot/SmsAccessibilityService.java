@@ -20,6 +20,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -28,6 +29,7 @@ public class SmsAccessibilityService extends AccessibilityService {
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private static SmsAccessibilityService instance;
     private String pendingPhone = null;
+    private boolean screenshotScheduled = false;
     private Handler handler = new Handler(Looper.getMainLooper());
 
     public static SmsAccessibilityService getInstance() {
@@ -52,6 +54,7 @@ public class SmsAccessibilityService extends AccessibilityService {
 
     public void setPendingPhone(String phone) {
         this.pendingPhone = phone;
+        this.screenshotScheduled = false;
         handler.post(() -> openSmsApp());
     }
 
@@ -69,17 +72,18 @@ public class SmsAccessibilityService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (pendingPhone == null) return;
+        if (screenshotScheduled) return;
         if (event.getPackageName() == null) return;
 
         String pkg = event.getPackageName().toString();
         if (pkg.contains("mms") || pkg.contains("messaging") || pkg.contains("messages")) {
-            handler.removeCallbacksAndMessages(null);
+            screenshotScheduled = true;
             handler.postDelayed(() -> {
-                String phoneCopy = pendingPhone;
-                if (phoneCopy == null) return;
+                if (pendingPhone == null) return;
                 takeScreenshotAndUpload();
                 pendingPhone = null;
-            }, 2500);
+                screenshotScheduled = false;
+            }, 3000);
         }
     }
 
@@ -129,18 +133,32 @@ public class SmsAccessibilityService extends AccessibilityService {
 
     private void updateTaskInSupabase(String phone, String screenshotBase64) {
         try {
-            URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?phone=eq." + phone + "&order=created_at.desc&limit=1");
+            String encodedPhone = URLEncoder.encode(phone, "UTF-8");
+            URL url = new URL(
+                    SUPABASE_URL + "/rest/v1/tasks?phone=eq." + encodedPhone + "&order=created_at.desc&limit=1"
+            );
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestProperty("apikey", SUPABASE_KEY);
             conn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
             conn.setRequestMethod("GET");
-            if (conn.getResponseCode() != 200) return;
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                Log.e("SMS_ACCESS", "Supabase GET error: " + code);
+                return;
+            }
             BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
             StringBuilder sb = new StringBuilder();
             String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
             reader.close();
-            JSONObject task = new JSONArray(sb.toString()).getJSONObject(0);
+            JSONArray arr = new JSONArray(sb.toString());
+            if (arr.length() == 0) {
+                Log.e("SMS_ACCESS", "Task not found for phone: " + phone);
+                return;
+            }
+            JSONObject task = arr.getJSONObject(0);
             int taskId = task.getInt("id");
 
             JSONObject updateBody = new JSONObject();
@@ -153,7 +171,8 @@ public class SmsAccessibilityService extends AccessibilityService {
             updateConn.setRequestProperty("Content-Type", "application/json");
             updateConn.setDoOutput(true);
             updateConn.getOutputStream().write(updateBody.toString().getBytes());
-            updateConn.getResponseCode();
+            int patchCode = updateConn.getResponseCode();
+            Log.d("SMS_ACCESS", "Supabase PATCH code: " + patchCode);
         } catch (Exception e) {
             Log.e("SMS_ACCESS", "Update error", e);
         }
