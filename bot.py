@@ -2,7 +2,6 @@ import os
 import asyncio
 import aiohttp
 import json
-import base64
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -16,8 +15,12 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DEFAULT_ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
-RAILWAY_PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_URL", "https://rep-production-730f.up.railway.app")
+RAILWAY_PUBLIC_URL = os.getenv("RAILWAY_PUBLIC_URL", "").rstrip("/")
 WEBHOOK_PATH = "/webhook"
+
+if not RAILWAY_PUBLIC_URL:
+    print("❌ Не задан RAILWAY_PUBLIC_URL! Бот не запустится.")
+    exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -25,7 +28,6 @@ dp = Dispatcher()
 DATA_FILE = "data.json"
 QUEUE_FILE = "queue.json"
 
-# ------------------------------------------------------------
 def load_json(path, default):
     if Path(path).exists():
         return json.load(open(path, "r", encoding="utf-8"))
@@ -53,8 +55,7 @@ def clean_phone(raw):
         return "+7" + digits
     return None
 
-# ------------------------------------------------------------
-# Команды
+# ---------- команды ----------
 @dp.message(Command("worklook"))
 async def worklook(message: Message):
     if message.from_user.id != get_admin_id():
@@ -63,8 +64,6 @@ async def worklook(message: Message):
         data["target_group"] = message.chat.id
         save_json(DATA_FILE, data)
         await message.reply(f"👁️ Слежу за группой: {message.chat.title}")
-    else:
-        await message.reply("❌ Эту команду нужно отправить в нужной группе.")
 
 @dp.message(Command("stoplook"))
 async def stoplook(message: Message):
@@ -103,20 +102,18 @@ async def ping(message: Message):
 async def mychatid(message: Message):
     await message.reply(f"Твой Chat ID: `{message.chat.id}`", parse_mode="Markdown")
 
-# Очередь для телефона
+# очередь для телефона
 @dp.message(Command("get_task"))
 async def get_task(message: Message):
-    global queue
     if not queue:
         return
     cmd = queue.pop(0)
     save_json(QUEUE_FILE, queue)
     await message.reply(f"/send {cmd['phone']} {cmd['template']}")
 
-# Обработка заказов в группе
+# обработка заказов в группе
 @dp.message()
 async def handle_message(message: Message):
-    global data
     if message.chat.id == data.get("target_group"):
         text = message.text or message.caption or ""
         if not text.strip() or text.startswith("/"):
@@ -152,7 +149,7 @@ async def handle_message(message: Message):
         save_json(DATA_FILE, data)
         return
 
-    # Ответы от телефона (скриншоты)
+    # ответы от телефона (фото / текст)
     if message.chat.type == "private":
         if message.photo:
             caption = message.caption or ""
@@ -176,27 +173,41 @@ async def handle_message(message: Message):
                         photo=message.photo[-1].file_id,
                         caption=f"✅ Доставлено: {phone}"
                     )
+        elif message.text and message.text.startswith("✅ Доставлено:"):
+            parts = message.text.split(":")
+            if len(parts) > 1:
+                phone = clean_phone(parts[1].strip())
+                if phone:
+                    for h in reversed(data["stats"]["history"]):
+                        if h["phone"] == phone and h["status"] == "pending":
+                            h["status"] = "success"
+                            data["stats"]["pending"] -= 1
+                            data["stats"]["success"] += 1
+                            save_json(DATA_FILE, data)
+                            break
+                    if data.get("target_group"):
+                        await bot.send_message(data["target_group"], f"✅ Доставлено: {phone}\n⚠ Без скрина")
 
-# ------------------------------------------------------------
+# ---------- Webhook setup ----------
 async def on_startup(bot: Bot):
     webhook_url = f"{RAILWAY_PUBLIC_URL}{WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url)
-    print(f"Webhook set to {webhook_url}")
+    print(f"Webhook установлен: {webhook_url}")
 
 async def main():
     app = web.Application()
-    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_handler.register(app, path=WEBHOOK_PATH)
+    handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
 
     await on_startup(bot)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", "8080")))
+    port = int(os.environ.get("PORT", "8080"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # Оставляем процесс живым
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
