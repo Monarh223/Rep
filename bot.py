@@ -4,17 +4,19 @@ import aiohttp
 import base64
 import json
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, BufferedInputFile, InlineKeyboardMarkup,
+    InlineKeyboardButton, CallbackQuery, FSInputFile
+)
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEFAULT_ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -24,22 +26,21 @@ dp = Dispatcher()
 DATA_FILE = "data.json"
 processed_ids = set()
 
-def load_json(path, default):
-    if Path(path).exists():
-        return json.load(open(path, "r", encoding="utf-8"))
-    return default
+def load_data():
+    if Path(DATA_FILE).exists():
+        return json.load(open(DATA_FILE, "r", encoding="utf-8"))
+    return {
+        "admin_ids": [int(os.getenv("ADMIN_CHAT_ID", "0"))],
+        "target_groups": {}
+    }
 
-def save_json(path, obj):
-    json.dump(obj, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+def save_data(d):
+    json.dump(d, open(DATA_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
-data = load_json(DATA_FILE, {
-    "target_group": None,
-    "admin_chat_id": DEFAULT_ADMIN_CHAT_ID,
-    "stats": {"total": 0, "success": 0, "failed": 0, "pending": 0, "history": []}
-})
+data = load_data()
 
-def get_admin_id():
-    return data.get("admin_chat_id", DEFAULT_ADMIN_CHAT_ID)
+def is_admin(user_id: int) -> bool:
+    return user_id in data.get("admin_ids", [])
 
 def clean_phone(raw):
     digits = ''.join(c for c in raw if c.isdigit())
@@ -50,202 +51,252 @@ def clean_phone(raw):
     return None
 
 # ---------- Клавиатуры ----------
-def admin_keyboard():
+def admin_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👁 Следить за группой", callback_data="worklook")],
-        [InlineKeyboardButton(text="🛑 Отключить слежение", callback_data="stoplook")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="📋 Детальный отчёт", callback_data="report")],
-        [InlineKeyboardButton(text="♻ Сбросить статистику", callback_data="resetstats")],
-        [InlineKeyboardButton(text="👑 Сменить админа", callback_data="setadmin")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")]
+        [InlineKeyboardButton(text="👁 Управление группами", callback_data="groups_menu")],
+        [InlineKeyboardButton(text="👑 Администраторы", callback_data="admins_menu"),
+         InlineKeyboardButton(text="📊 Отчёты", callback_data="reports_menu")],
+        [InlineKeyboardButton(text="🛠 Сброс статистики", callback_data="reset_menu")],
     ])
 
-def user_keyboard():
+def groups_menu_keyboard():
+    kb = [
+        [InlineKeyboardButton(text="➕ Включить слежение", callback_data="group_add")],
+        [InlineKeyboardButton(text="➖ Отключить слежение", callback_data="group_remove")],
+        [InlineKeyboardButton(text="📋 Список групп", callback_data="group_list")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+def admins_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="📋 Отчёт за сегодня", callback_data="today")],
-        [InlineKeyboardButton(text="🟢 Пинг", callback_data="ping")]
+        [InlineKeyboardButton(text="➕ Добавить админа", callback_data="admin_add")],
+        [InlineKeyboardButton(text="➖ Удалить админа", callback_data="admin_remove")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
     ])
 
-# ---------- Команды ----------
+def reports_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Полный отчёт", callback_data="report_full")],
+        [InlineKeyboardButton(text="📅 За сегодня", callback_data="report_today")],
+        [InlineKeyboardButton(text="📆 За дату", callback_data="report_date")],
+        [InlineKeyboardButton(text="✅ Только успешные", callback_data="report_success")],
+        [InlineKeyboardButton(text="📥 Выгрузить TXT", callback_data="export_menu")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+    ])
+
+def export_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 За всё время", callback_data="export_all")],
+        [InlineKeyboardButton(text="📄 За сегодня", callback_data="export_today")],
+        [InlineKeyboardButton(text="📄 Успешные", callback_data="export_success")],
+        [InlineKeyboardButton(text="📄 За дату", callback_data="export_date_prompt")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="reports_menu")]
+    ])
+
+def reset_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="♻ Сбросить всё", callback_data="reset_all")],
+        [InlineKeyboardButton(text="♻ Сбросить за сегодня", callback_data="reset_today")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+    ])
+
+# ---------- /start ----------
 @dp.message(Command("start"))
-async def start(message: Message):
-    if message.from_user.id == get_admin_id():
-        await message.reply("🔐 Админ-панель:", reply_markup=admin_keyboard())
+async def start_command(message: Message):
+    if is_admin(message.from_user.id):
+        await message.reply("🔐 Админ-панель:", reply_markup=admin_main_keyboard())
     else:
-        await message.reply("👋 Привет! Я бот для рассылки SMS.", reply_markup=user_keyboard())
+        text = (
+            "👋 <b>SMS-рассылка через Telegram-бота</b>\n\n"
+            "📲 <b>Как установить приложение на телефон:</b>\n"
+            "1. Скачай APK-файл и установи его\n"
+            "2. Обязательно выдай все запрашиваемые разрешения (SMS, уведомления, запись экрана)\n"
+            "3. Нажми «📸 Разрешить скриншоты» и прими системный диалог (на Oppo/Redmi работает)\n"
+            "4. Нажми «💾 Сохранить и запустить»\n"
+            "5. Если нужно выключить – нажми «🛑 Остановить сервис»\n\n"
+            "🤖 <b>Как добавить бота в группу:</b>\n"
+            "– Добавь бота в группу\n"
+            "– Напиши <code>/look</code> (только для администраторов)\n"
+            "– После этого все номера в группе будут обрабатываться автоматически"
+        )
+        await message.reply(text, parse_mode="HTML")
 
-@dp.message(Command("admin"))
-async def admin(message: Message):
-    if message.from_user.id != get_admin_id():
+# ---------- /look – включение/отключение группы ----------
+@dp.message(Command("look"))
+async def look_command(message: Message):
+    if not is_admin(message.from_user.id):
         return
-    await message.reply("🔐 Админ-панель:", reply_markup=admin_keyboard())
+    if message.chat.type not in ["group", "supergroup"]:
+        await message.reply("Эту команду можно использовать только в группе.")
+        return
+    gid = str(message.chat.id)
+    if gid in data["target_groups"]:
+        del data["target_groups"][gid]
+        save_data(data)
+        await message.reply("🛑 Слежение за группой отключено.")
+    else:
+        data["target_groups"][gid] = message.chat.title or "Без названия"
+        save_data(data)
+        await message.reply("👁 Слежение за группой включено.")
 
-# ---------- Callback-обработчики ----------
+# ---------- Админка – колбеки ----------
 @dp.callback_query()
 async def callback_handler(callback: CallbackQuery):
     await callback.answer()
     uid = callback.from_user.id
     cmd = callback.data
 
-    if cmd == "worklook":
-        if uid != get_admin_id(): return
-        if callback.message.chat.type in ["group", "supergroup"]:
-            data["target_group"] = callback.message.chat.id
-            save_json(DATA_FILE, data)
-            await callback.message.reply(f"👁 Слежу за группой: {callback.message.chat.title}")
+    if not is_admin(uid):
+        await callback.message.reply("⛔ У вас нет прав администратора.")
+        return
+
+    if cmd == "main_menu":
+        await callback.message.edit_text("🔐 Админ-панель:", reply_markup=admin_main_keyboard())
+    elif cmd == "groups_menu":
+        await callback.message.edit_text("👁 Управление группами:", reply_markup=groups_menu_keyboard())
+    elif cmd == "admins_menu":
+        await callback.message.edit_text("👑 Администраторы:", reply_markup=admins_menu_keyboard())
+    elif cmd == "reports_menu":
+        await callback.message.edit_text("📊 Отчёты:", reply_markup=reports_menu_keyboard())
+    elif cmd == "reset_menu":
+        await callback.message.edit_text("♻ Сброс статистики:", reply_markup=reset_menu_keyboard())
+
+    # Группы
+    elif cmd == "group_add":
+        await callback.message.answer("ℹ️ Перейди в нужную группу и напиши /look")
+    elif cmd == "group_remove":
+        if not data["target_groups"]:
+            await callback.message.answer("Нет отслеживаемых групп.")
+            return
+        kb = []
+        for gid, title in data["target_groups"].items():
+            kb.append([InlineKeyboardButton(text=f"❌ {title}", callback_data=f"grp_rm_{gid}")])
+        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="groups_menu")])
+        await callback.message.edit_text("Выбери группу для удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    elif cmd.startswith("grp_rm_"):
+        gid = cmd[7:]
+        if gid in data["target_groups"]:
+            del data["target_groups"][gid]
+            save_data(data)
+            await callback.message.answer("Группа удалена.")
+        await callback.message.edit_text("👁 Управление группами:", reply_markup=groups_menu_keyboard())
+    elif cmd == "group_list":
+        if not data["target_groups"]:
+            await callback.message.answer("Нет групп.")
         else:
-            await callback.message.reply("❌ Эту команду нужно выполнять в группе")
+            text = "📋 <b>Отслеживаемые группы:</b>\n"
+            for gid, title in data["target_groups"].items():
+                text += f"• {title} (<code>{gid}</code>)\n"
+            await callback.message.answer(text, parse_mode="HTML")
 
-    elif cmd == "stoplook":
-        if uid != get_admin_id(): return
-        data["target_group"] = None
-        save_json(DATA_FILE, data)
-        await callback.message.reply("🛑 Слежение отключено")
+    # Админы
+    elif cmd == "admin_add":
+        await callback.message.answer("Используй команду /addadmin <id>")
+    elif cmd == "admin_remove":
+        await callback.message.answer("Используй команду /removeadmin <id>")
 
-    elif cmd == "stats":
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{SUPABASE_URL}/rest/v1/tasks?select=status", headers=headers) as resp:
-                if resp.status == 200:
-                    tasks = await resp.json()
-                    total = len(tasks)
-                    success = sum(1 for t in tasks if t["status"] == "success")
-                    failed = sum(1 for t in tasks if t["status"] == "failed")
-                    pending = total - success - failed
-                    await callback.message.reply(
-                        f"📊 Статистика:\n"
-                        f"├ Всего: {total}\n"
-                        f"├ ✅ Успешно: {success}\n"
-                        f"├ ❌ Сбой: {failed}\n"
-                        f"└ ⏳ В ожидании: {pending}"
-                    )
+    # Отчёты
+    elif cmd == "report_full":
+        await send_report(callback.message, "all")
+    elif cmd == "report_today":
+        await send_report(callback.message, "day")
+    elif cmd == "report_date":
+        await callback.message.reply("Введи дату в формате ДД-ММ-ГГГГ (например 01-01-2026):")
+    elif cmd == "report_success":
+        await send_report(callback.message, "success")
 
-    elif cmd == "today":
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        today_str = date.today().isoformat()
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{SUPABASE_URL}/rest/v1/tasks?select=*&created_at=gte.{today_str}&order=created_at.desc",
-                headers=headers
-            ) as resp:
-                if resp.status == 200:
-                    tasks = await resp.json()
-                    if not tasks:
-                        await callback.message.reply("📋 За сегодня нет задач")
-                        return
-                    total = len(tasks)
-                    success = sum(1 for t in tasks if t["status"] == "success")
-                    failed = sum(1 for t in tasks if t["status"] == "failed")
-                    text = f"📋 Отчёт за {today_str}:\n├ Всего: {total}\n├ ✅ Успешно: {success}\n├ ❌ Сбой: {failed}\n\n"
-                    for t in tasks[:10]:
-                        icon = "✅" if t["status"] == "success" else "❌"
-                        text += f"{icon} {t['phone']} — {t['template'][:30]}\n"
-                    await callback.message.reply(text)
+    # Экспорт
+    elif cmd == "export_menu":
+        await callback.message.edit_text("📥 Выгрузить TXT:", reply_markup=export_menu_keyboard())
+    elif cmd == "export_all":
+        await export_txt(callback.message, "all")
+    elif cmd == "export_today":
+        await export_txt(callback.message, "day")
+    elif cmd == "export_success":
+        await export_txt(callback.message, "success")
+    elif cmd == "export_date_prompt":
+        await callback.message.reply("Введи дату ДД-ММ-ГГГГ:")
 
-    elif cmd == "report":
-        if uid != get_admin_id(): return
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        today_str = date.today().isoformat()
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{SUPABASE_URL}/rest/v1/tasks?select=*&order=created_at.desc&limit=50",
-                headers=headers
-            ) as resp:
-                if resp.status == 200:
-                    tasks = await resp.json()
-                    if not tasks:
-                        await callback.message.reply("Нет данных")
-                        return
-                    total = len(tasks)
-                    success = sum(1 for t in tasks if t["status"] == "success")
-                    failed = sum(1 for t in tasks if t["status"] == "failed")
-                    today_tasks = [t for t in tasks if t["created_at"].startswith(today_str)]
-                    today_total = len(today_tasks)
-                    today_success = sum(1 for t in today_tasks if t["status"] == "success")
-                    today_failed = sum(1 for t in today_tasks if t["status"] == "failed")
+    # Сброс
+    elif cmd == "reset_all":
+        await confirm_action(callback.message, "reset_all", "сбросить ВСЮ статистику")
+    elif cmd == "reset_today":
+        await confirm_action(callback.message, "reset_today", "сбросить статистику за сегодня")
+    elif cmd.startswith("confirm_"):
+        action = cmd[8:]
+        await callback.message.edit_text("Выполняю...")
+        await execute_reset(callback.message, action)
+    elif cmd == "cancel_reset":
+        await callback.message.edit_text("Сброс отменён.", reply_markup=reset_menu_keyboard())
 
-                    text = (
-                        f"📊 Детальный отчёт:\n\n"
-                        f"За всё время:\n├ Всего: {total}\n├ ✅ {success}\n└ ❌ Сбой: {failed}\n\n"
-                        f"За сегодня ({today_str}):\n├ Всего: {today_total}\n├ ✅ {today_success}\n└ ❌ Сбой: {today_failed}\n\n"
-                        f"Последние 10 задач:\n"
-                    )
-                    for t in tasks[:10]:
-                        icon = "✅" if t["status"] == "success" else "❌"
-                        status_text = " — Сбой (Не доставлено)" if t["status"] == "failed" else ""
-                        text += f"{icon} {t['phone']} — {t['template'][:30]}{status_text}\n"
-                    await callback.message.reply(text)
-
-    elif cmd == "resetstats":
-        if uid != get_admin_id(): return
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        async with aiohttp.ClientSession() as session:
-            async with session.delete(f"{SUPABASE_URL}/rest/v1/tasks?status=neq.null", headers=headers) as resp:
-                if resp.status == 200:
-                    await callback.message.reply("♻ Статистика сброшена")
-
-    elif cmd == "ping":
-        await callback.message.reply("🟢 Бот работает")
-
-    elif cmd == "settings":
-        if uid != get_admin_id(): return
-        text = f"⚙️ Настройки:\n• Целевая группа: {data.get('target_group', 'не задана')}\n• Админ ID: {get_admin_id()}"
-        await callback.message.reply(text)
-
-    elif cmd == "setadmin":
-        await callback.message.reply("Используй команду: /setadmin [новый ID]")
-
-# ---------- Текстовые команды ----------
-@dp.message(Command("setadmin"))
-async def set_admin(message: Message):
-    if message.from_user.id != get_admin_id(): return
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.reply("Используй: /setadmin 123456789")
-        return
+# ---------- Команды администрирования ----------
+@dp.message(Command("addadmin"))
+async def add_admin(message: Message):
+    if not is_admin(message.from_user.id): return
     try:
-        new_id = int(parts[1])
-    except ValueError:
-        await message.reply("❌ Неверный ID")
+        new_id = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        await message.reply("Используй: /addadmin <id>")
         return
-    data["admin_chat_id"] = new_id
-    save_json(DATA_FILE, data)
-    await message.reply(f"✅ ADMIN_CHAT_ID изменён на {new_id}")
+    if new_id not in data["admin_ids"]:
+        data["admin_ids"].append(new_id)
+        save_data(data)
+        await message.reply(f"✅ Админ {new_id} добавлен.")
+    else:
+        await message.reply("Этот пользователь уже админ.")
 
-@dp.message(Command("worklook"))
-async def worklook(message: Message):
-    if message.from_user.id != get_admin_id(): return
-    if message.chat.type in ["group", "supergroup"]:
-        data["target_group"] = message.chat.id
-        save_json(DATA_FILE, data)
-        await message.reply(f"👁 Слежу за группой: {message.chat.title}")
+@dp.message(Command("removeadmin"))
+async def remove_admin(message: Message):
+    if not is_admin(message.from_user.id): return
+    try:
+        rm_id = int(message.text.split()[1])
+    except (IndexError, ValueError):
+        await message.reply("Используй: /removeadmin <id>")
+        return
+    main_admin = int(os.getenv("ADMIN_CHAT_ID", "0"))
+    if rm_id == main_admin:
+        await message.reply("Нельзя удалить главного администратора.")
+        return
+    if rm_id in data["admin_ids"]:
+        data["admin_ids"].remove(rm_id)
+        save_data(data)
+        await message.reply(f"❌ Админ {rm_id} удалён.")
+    else:
+        await message.reply("Такого админа нет.")
 
-# ---------- Обработка сообщений группы ----------
+# ---------- Обработка сообщений в группах ----------
 @dp.message()
-async def handle_message(message: Message):
-    if message.chat.id != data.get("target_group"):
-        return
-    text = message.text or ""
-    if not text.strip() or text.startswith("/"):
+async def handle_any_message(message: Message):
+    text = message.text.strip() if message.text else ""
+
+    # Если сообщение – дата для отчёта
+    if re.match(r"\d{2}-\d{2}-\d{4}", text):
+        try:
+            dt = datetime.strptime(text, "%d-%m-%Y").date()
+            if "export" in text.lower():
+                await export_txt(message, "date", dt)
+            else:
+                await send_report(message, "date", dt)
+        except ValueError:
+            await message.reply("Неверный формат даты.")
         return
 
-    words = text.strip().split()
+    # Обработка номеров в отслеживаемых группах
+    if str(message.chat.id) not in data.get("target_groups", {}):
+        return
+
     phone = None
-    for word in words:
+    for word in text.split():
         p = clean_phone(word.strip().replace(",", "").replace(".", "").replace(")", "").replace("(", ""))
         if p:
             phone = p
             break
-
     if not phone:
         return
 
     pattern = re.escape(phone) + r'|' + re.escape(phone[1:]) + r'|' + re.escape('8' + phone[2:])
-    template = re.sub(pattern, '', text, count=1).strip()
-    if not template:
-        template = "Сообщение"
+    template = re.sub(pattern, '', text, count=1).strip() or "Сообщение"
 
     headers = {
         "apikey": SUPABASE_KEY,
@@ -260,6 +311,94 @@ async def handle_message(message: Message):
                 await message.reply(f"🔄 Задача добавлена: {phone}")
             else:
                 await message.reply("❌ Ошибка добавления задачи")
+
+# ---------- Вспомогательные функции ----------
+async def fetch_tasks(params=""):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{SUPABASE_URL}/rest/v1/tasks?{params}", headers=headers) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return []
+
+async def send_report(msg: Message, mode: str, date_val=None):
+    if mode == "all":
+        tasks = await fetch_tasks("select=*&order=created_at.desc&limit=20")
+    elif mode == "day":
+        today = date.today().isoformat()
+        tasks = await fetch_tasks(f"select=*&created_at=gte.{today}&order=created_at.desc&limit=20")
+    elif mode == "success":
+        tasks = await fetch_tasks("select=*&status=eq.success&order=created_at.desc&limit=20")
+    elif mode == "date" and date_val:
+        day_str = date_val.isoformat()
+        tasks = await fetch_tasks(f"select=*&created_at=gte.{day_str}&created_at=lt.{day_str}T23:59:59&order=created_at.desc&limit=20")
+    else:
+        tasks = []
+
+    if not tasks:
+        await msg.reply("Нет данных.")
+        return
+
+    total = len(tasks)
+    success = sum(1 for t in tasks if t["status"] == "success")
+    failed = total - success
+    lines = [f"📊 Всего: {total} | ✅ {success} | ❌ {failed}\n"]
+    for t in tasks[:10]:
+        icon = "✅" if t["status"] == "success" else "❌"
+        time_str = t.get("created_at", "")[:19].replace("T", " ")
+        lines.append(f"{icon} {t['phone']} | {t['template'][:25]} | {time_str}")
+    await msg.reply("\n".join(lines))
+
+async def export_txt(msg: Message, mode: str, date_val=None):
+    if mode == "all":
+        tasks = await fetch_tasks("select=*&order=created_at.desc")
+        fname = "full_report.txt"
+    elif mode == "day":
+        today = date.today().isoformat()
+        tasks = await fetch_tasks(f"select=*&created_at=gte.{today}")
+        fname = f"report_{today}.txt"
+    elif mode == "success":
+        tasks = await fetch_tasks("select=*&status=eq.success")
+        fname = "success_report.txt"
+    elif mode == "date" and date_val:
+        day_str = date_val.isoformat()
+        tasks = await fetch_tasks(f"select=*&created_at=gte.{day_str}&created_at=lt.{day_str}T23:59:59")
+        fname = f"report_{day_str}.txt"
+    else:
+        tasks = []
+        fname = "report.txt"
+
+    if not tasks:
+        await msg.reply("Нет данных.")
+        return
+
+    text = "\n".join(
+        f"{'✅' if t['status']=='success' else '❌'} {t['phone']} | {t['template'][:30]} | {t.get('created_at','')}"
+        for t in tasks
+    )
+    with open(fname, "w", encoding="utf-8") as f:
+        f.write(text)
+    await msg.reply_document(FSInputFile(fname))
+
+async def confirm_action(msg: Message, action: str, description: str):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{action}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_reset")]
+    ])
+    await msg.reply(f"Вы уверены, что хотите {description}?", reply_markup=kb)
+
+async def execute_reset(msg: Message, action: str):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    url = f"{SUPABASE_URL}/rest/v1/tasks"
+    if action == "reset_all":
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(url, headers=headers) as resp:
+                await msg.reply("✅ Статистика полностью сброшена.")
+    elif action == "reset_today":
+        today = date.today().isoformat()
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(f"{url}?created_at=gte.{today}", headers=headers) as resp:
+                await msg.reply("✅ Статистика за сегодня сброшена.")
 
 # ---------- Фоновый опрос результатов ----------
 async def check_completed_tasks():
@@ -281,18 +420,16 @@ async def check_completed_tasks():
                             phone = task["phone"]
                             status = task["status"]
                             screenshot_b64 = task.get("screenshot")
-                            target = data.get("target_group")
-                            if not target:
-                                continue
-                            if screenshot_b64:
-                                screenshot_bytes = base64.b64decode(screenshot_b64)
-                                caption = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой (Не доставлено): {phone}"
-                                await bot.send_photo(target, photo=BufferedInputFile(screenshot_bytes, filename="screen.jpg"), caption=caption)
-                            else:
-                                text = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой (Не доставлено): {phone}"
-                                await bot.send_message(target, text)
+                            for gid in data.get("target_groups", {}):
+                                if screenshot_b64:
+                                    scr = base64.b64decode(screenshot_b64)
+                                    cap = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой: {phone}"
+                                    await bot.send_photo(int(gid), BufferedInputFile(scr, "screen.jpg"), caption=cap)
+                                else:
+                                    txt = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой: {phone}"
+                                    await bot.send_message(int(gid), txt)
         except Exception as e:
-            print(f"Check error: {e}")
+            print("Checker error:", e)
         await asyncio.sleep(3)
 
 async def main():
