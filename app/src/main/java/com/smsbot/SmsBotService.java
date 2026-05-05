@@ -94,11 +94,8 @@ public class SmsBotService extends Service {
     }
 
     private byte[] takeScreenshot() {
-        // Способ 1: MediaProjection
         byte[] mp = screenshotViaMediaProjection();
         if (mp != null) return mp;
-
-        // Способ 2: screencap shell
         return screenshotViaShell();
     }
 
