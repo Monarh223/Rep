@@ -17,6 +17,8 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
     private MediaProjectionManager mpManager;
+    private Intent pendingScreenData = null;
+    private int pendingResultCode = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -27,7 +29,6 @@ public class MainActivity extends Activity {
 
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
-        Button btnStart = findViewById(R.id.btnStart);
         Button btnStop = findViewById(R.id.btnStop);
 
         btnAccessibility.setOnClickListener(v -> {
@@ -39,17 +40,6 @@ public class MainActivity extends Activity {
         btnScreenshot.setOnClickListener(v -> {
             Intent intent = mpManager.createScreenCaptureIntent();
             startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
-        });
-
-        btnStart.setOnClickListener(v -> {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this,
-                        new String[]{Manifest.permission.SEND_SMS},
-                        REQUEST_CODE_SMS);
-            } else {
-                startSmsService(null, 0);
-            }
         });
 
         btnStop.setOnClickListener(v -> {
@@ -79,7 +69,11 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CODE_SMS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startSmsService(null, 0);
+                if (pendingScreenData != null) {
+                    startSmsService(pendingScreenData, pendingResultCode);
+                } else {
+                    Toast.makeText(this, "Сначала разреши скриншоты", Toast.LENGTH_LONG).show();
+                }
             } else {
                 Toast.makeText(this, "Без SMS разрешения приложение не будет работать", Toast.LENGTH_LONG).show();
             }
@@ -90,8 +84,17 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
-            Toast.makeText(this, "Скриншоты готовы", Toast.LENGTH_SHORT).show();
-            startSmsService(data, resultCode);
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                pendingScreenData = data;
+                pendingResultCode = resultCode;
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.SEND_SMS},
+                        REQUEST_CODE_SMS);
+            } else {
+                Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
+                startSmsService(data, resultCode);
+            }
         }
     }
 }
