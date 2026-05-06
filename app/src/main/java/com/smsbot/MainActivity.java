@@ -33,15 +33,8 @@ public class MainActivity extends Activity {
 
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
-        // Запрос на отключение оптимизации батареи (для POCO/MIUI)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, 100);
-            }
-        }
+        // Автоматически проверяем и показываем, что нужно включить
+        checkAndRequestRequiredPermissions();
 
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
@@ -83,7 +76,7 @@ public class MainActivity extends Activity {
                     Toast.makeText(this, "Ошибка сохранения: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 }
             } else {
-                Toast.makeText(this, "Лог-файл пока не создан. Отправьте SMS для его появления.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Лог-файл пока не создан.", Toast.LENGTH_LONG).show();
             }
         });
 
@@ -92,6 +85,41 @@ public class MainActivity extends Activity {
             stopService(serviceIntent);
             Toast.makeText(this, "Сервис остановлен", Toast.LENGTH_SHORT).show();
         });
+    }
+
+    private void checkAndRequestRequiredPermissions() {
+        // 1. Отключаем оптимизацию батареи (обязательно для POCO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                Toast.makeText(this, "Отключите оптимизацию батареи для SMS Bot", Toast.LENGTH_LONG).show();
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, 100);
+                return; // чтобы не показывать несколько запросов одновременно
+            }
+        }
+
+        // 2. Разрешение на всплывающие окна (для Accessibility и медиапроекции)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.canDrawOverlays(this)) {
+                Toast.makeText(this, "Разрешите отображение поверх других окон", Toast.LENGTH_LONG).show();
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, 101);
+                return;
+            }
+        }
+
+        // 3. Напоминание про автозапуск (POCO)
+        String manufacturer = Build.MANUFACTURER.toLowerCase();
+        if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco")) {
+            Toast.makeText(this, "Включите автозапуск в настройках приложения", Toast.LENGTH_LONG).show();
+            // Открываем настройки приложения
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        }
     }
 
     private void copyFile(File source, File dest) throws Exception {
@@ -139,6 +167,9 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
             Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
             startSmsService(data, resultCode);
+        } else {
+            // После закрытия окон настроек проверяем снова
+            checkAndRequestRequiredPermissions();
         }
     }
 }
