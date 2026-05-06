@@ -3,6 +3,7 @@ package com.smsbot;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
@@ -24,7 +25,10 @@ import java.io.OutputStream;
 public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
     private static final int REQUEST_CODE_SMS = 456;
+    private static final String PREF_NAME = "smsbot_prefs";
+    private static final String KEY_PERMISSIONS_GRANTED = "permissions_granted";
     private MediaProjectionManager mpManager;
+    private SharedPreferences prefs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,9 +36,12 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+        prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
 
-        // Автоматически проверяем и показываем, что нужно включить
-        checkAndRequestRequiredPermissions();
+        // Проверяем, первый ли это запуск
+        if (!prefs.getBoolean(KEY_PERMISSIONS_GRANTED, false)) {
+            checkAndRequestRequiredPermissions();
+        }
 
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
@@ -88,21 +95,25 @@ public class MainActivity extends Activity {
     }
 
     private void checkAndRequestRequiredPermissions() {
-        // 1. Отключаем оптимизацию батареи (обязательно для POCO)
+        boolean allGranted = true;
+
+        // 1. Отключаем оптимизацию батареи
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
             if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                allGranted = false;
                 Toast.makeText(this, "Отключите оптимизацию батареи для SMS Bot", Toast.LENGTH_LONG).show();
                 Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
                 intent.setData(Uri.parse("package:" + getPackageName()));
                 startActivityForResult(intent, 100);
-                return; // чтобы не показывать несколько запросов одновременно
+                return;
             }
         }
 
-        // 2. Разрешение на всплывающие окна (для Accessibility и медиапроекции)
+        // 2. Разрешение на всплывающие окна
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.canDrawOverlays(this)) {
+                allGranted = false;
                 Toast.makeText(this, "Разрешите отображение поверх других окон", Toast.LENGTH_LONG).show();
                 Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:" + getPackageName()));
@@ -111,14 +122,10 @@ public class MainActivity extends Activity {
             }
         }
 
-        // 3. Напоминание про автозапуск (POCO)
-        String manufacturer = Build.MANUFACTURER.toLowerCase();
-        if (manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco")) {
-            Toast.makeText(this, "Включите автозапуск в настройках приложения", Toast.LENGTH_LONG).show();
-            // Открываем настройки приложения
-            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            intent.setData(Uri.parse("package:" + getPackageName()));
-            startActivity(intent);
+        // Если все разрешения выданы — запоминаем
+        if (allGranted) {
+            prefs.edit().putBoolean(KEY_PERMISSIONS_GRANTED, true).apply();
+            Toast.makeText(this, "Все разрешения получены!", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -169,7 +176,9 @@ public class MainActivity extends Activity {
             startSmsService(data, resultCode);
         } else {
             // После закрытия окон настроек проверяем снова
-            checkAndRequestRequiredPermissions();
+            if (!prefs.getBoolean(KEY_PERMISSIONS_GRANTED, false)) {
+                checkAndRequestRequiredPermissions();
+            }
         }
     }
 }
