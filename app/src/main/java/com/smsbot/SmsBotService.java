@@ -28,25 +28,29 @@ public class SmsBotService extends Service {
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
     private MediaProjection mediaProjection;
-    private HandlerThread handlerThread;
-    private Handler handler;
-    private PowerManager.WakeLock wakeLock;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        // WakeLock, чтобы не засыпал на POCO
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SmsBot::WakeLock");
-        wakeLock.acquire(10*60*1000L); // 10 минут, потом продлим
-        handlerThread = new HandlerThread("SmsBotWorker");
-        handlerThread.start();
-        handler = new Handler(handlerThread.getLooper());
+        // Создаём канал уведомлений, чтобы foreground сервис не крашился
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    "smsbot_channel",
+                    "SMS Bot",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // Запускаем foreground с корректным уведомлением
         startForeground(1, buildNotification());
+
         if (intent != null && intent.hasExtra("resultCode") && intent.hasExtra("data")) {
             int resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED);
             Intent data = intent.getParcelableExtra("data");
@@ -57,13 +61,9 @@ public class SmsBotService extends Service {
                 logToFile("[MEDIA] MediaProjection получен");
             }
         }
-        handler.post(workerRunnable);
-        return START_STICKY;
-    }
 
-    private final Runnable workerRunnable = new Runnable() {
-        @Override
-        public void run() {
+        // Запускаем рабочий цикл
+        new Thread(() -> {
             while (running) {
                 try {
                     checkAndProcessTasks();
@@ -73,8 +73,10 @@ public class SmsBotService extends Service {
                 }
                 try { Thread.sleep(2000); } catch (Exception e) {}
             }
-        }
-    };
+        }).start();
+
+        return START_STICKY;
+    }
 
     private void checkAndProcessTasks() throws Exception {
         URL url = new URL(SUPABASE_URL + "/rest/v1/tasks?status=eq.pending&order=created_at.asc&limit=1");
@@ -102,6 +104,7 @@ public class SmsBotService extends Service {
 
         logToFile("[TASK] Задача #" + taskId + " на номер " + phone);
 
+        // Отправка SMS с подтверждением
         final String[] finalStatus = {"failed"};
         final CountDownLatch latch = new CountDownLatch(1);
 
@@ -148,6 +151,7 @@ public class SmsBotService extends Service {
             unregisterReceiver(sentReceiver);
         }
 
+        // Обновляем статус задачи
         JSONObject updateBody = new JSONObject();
         updateBody.put("status", finalStatus[0]);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -161,7 +165,9 @@ public class SmsBotService extends Service {
         int patchCode = updateConn.getResponseCode();
         logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
 
-        if (finalStatus[0].equals("success") && SmsAccessibilityService.getInstance() != null) {
+        // Если есть MediaProjection и Accessibility – делаем скриншот
+        if (finalStatus[0].equals("success") && mediaProjection != null
+                && SmsAccessibilityService.getInstance() != null) {
             Intent homeIntent = new Intent(Intent.ACTION_MAIN);
             homeIntent.addCategory(Intent.CATEGORY_HOME);
             homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -199,15 +205,12 @@ public class SmsBotService extends Service {
             }
             startActivity(homeIntent);
         } else {
-            logToFile("[ERROR] Accessibility не доступен или SMS не отправлено");
+            logToFile("[ERROR] Нет MediaProjection или Accessibility");
         }
     }
 
     private String takeScreenshot() {
-        if (mediaProjection == null) {
-            logToFile("[SCREENSHOT] ОШИБКА: MediaProjection is null");
-            return null;
-        }
+        if (mediaProjection == null) return null;
         ImageReader reader = null;
         VirtualDisplay vd = null;
         Image image = null;
@@ -260,14 +263,9 @@ public class SmsBotService extends Service {
     }
 
     private Notification buildNotification() {
-        String chId = "smsbot";
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel ch = new NotificationChannel(chId, "SMS Bot", NotificationManager.IMPORTANCE_LOW);
-            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
-        }
-        return new NotificationCompat.Builder(this, chId)
+        return new NotificationCompat.Builder(this, "smsbot_channel")
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Обработка задач...")
+                .setContentText("Отправка SMS и скриншотов...")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
@@ -279,8 +277,6 @@ public class SmsBotService extends Service {
     @Override
     public void onDestroy() {
         running = false;
-        if (handlerThread != null) handlerThread.quitSafely();
-        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         super.onDestroy();
     }
 }
