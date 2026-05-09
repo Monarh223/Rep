@@ -16,11 +16,8 @@ import java.io.*;
 import java.net.*;
 import java.nio.*;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.Locale;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
 import org.json.*;
 
 public class SmsBotService extends Service {
@@ -28,53 +25,37 @@ public class SmsBotService extends Service {
     private static final String SUPABASE_KEY = "sb_publishable_5Nr0YPv96-6cyQQKoDXlqg_OkhyqPvB";
     private boolean running = true;
     private MediaProjection mediaProjection;
+    private final Set<Integer> processedTasks = new HashSet<>();
 
     @Override
     public void onCreate() {
         super.onCreate();
-        // Создаём канал уведомлений, чтобы foreground сервис не крашился
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                    "smsbot_channel",
-                    "SMS Bot",
-                    NotificationManager.IMPORTANCE_LOW
-            );
+                    "smsbot_channel", "SMS Bot", NotificationManager.IMPORTANCE_LOW);
             NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
+            if (manager != null) manager.createNotificationChannel(channel);
         }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // Запускаем foreground с корректным уведомлением
         startForeground(1, buildNotification());
-
         if (intent != null && intent.hasExtra("resultCode") && intent.hasExtra("data")) {
             int resultCode = intent.getIntExtra("resultCode", Activity.RESULT_CANCELED);
             Intent data = intent.getParcelableExtra("data");
-            MediaProjectionManager manager =
-                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+            MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
             if (manager != null) {
                 mediaProjection = manager.getMediaProjection(resultCode, data);
                 logToFile("[MEDIA] MediaProjection получен");
             }
         }
-
-        // Запускаем рабочий цикл
         new Thread(() -> {
             while (running) {
-                try {
-                    checkAndProcessTasks();
-                } catch (Exception e) {
-                    logToFile("[ERROR] Цикл задач: " + e.getMessage());
-                    e.printStackTrace();
-                }
-                try { Thread.sleep(2000); } catch (Exception e) {}
+                try { checkAndProcessTasks(); } catch (Exception e) { logToFile("[ERROR] " + e.getMessage()); }
+                try { Thread.sleep(1500); } catch (Exception ignored) {}
             }
         }).start();
-
         return START_STICKY;
     }
 
@@ -84,11 +65,8 @@ public class SmsBotService extends Service {
         conn.setRequestProperty("apikey", SUPABASE_KEY);
         conn.setRequestProperty("Authorization", "Bearer " + SUPABASE_KEY);
         conn.setRequestMethod("GET");
+        if (conn.getResponseCode() != 200) return;
 
-        if (conn.getResponseCode() != 200) {
-            logToFile("[SUPABASE] Ошибка GET: " + conn.getResponseCode());
-            return;
-        }
         BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
         StringBuilder sb = new StringBuilder();
         String line;
@@ -102,32 +80,27 @@ public class SmsBotService extends Service {
         String phone = task.getString("phone");
         String template = task.getString("template");
 
-        logToFile("[TASK] Задача #" + taskId + " на номер " + phone);
+        if (processedTasks.contains(taskId)) return;
+        processedTasks.add(taskId);
+        logToFile("[TASK] #" + taskId + " на " + phone);
 
         // Отправка SMS с подтверждением
         final String[] finalStatus = {"failed"};
         final CountDownLatch latch = new CountDownLatch(1);
-
         Intent sentIntent = new Intent("SMS_SENT");
         PendingIntent sentPI = PendingIntent.getBroadcast(this, 0, sentIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
         BroadcastReceiver sentReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
                 switch (getResultCode()) {
-                    case Activity.RESULT_OK:
-                        finalStatus[0] = "success";
-                        break;
-                    default:
-                        finalStatus[0] = "failed";
-                        break;
+                    case Activity.RESULT_OK: finalStatus[0] = "success"; break;
+                    default: finalStatus[0] = "failed"; break;
                 }
                 latch.countDown();
             }
         };
         registerReceiver(sentReceiver, new IntentFilter("SMS_SENT"), Context.RECEIVER_EXPORTED);
-
         try {
             SmsManager sms = SmsManager.getDefault();
             if (template.length() > 160) {
@@ -138,20 +111,15 @@ public class SmsBotService extends Service {
             } else {
                 sms.sendTextMessage(phone, null, template, sentPI, null);
             }
-            if (latch.await(30, TimeUnit.SECONDS)) {
-                logToFile("[SMS] Результат отправки: " + finalStatus[0]);
-            } else {
-                logToFile("[SMS] Таймаут подтверждения, считаем ошибкой");
-                finalStatus[0] = "failed";
-            }
+            latch.await(30, TimeUnit.SECONDS);
         } catch (Exception e) {
-            logToFile("[SMS] Ошибка отправки: " + e.getMessage());
             finalStatus[0] = "failed";
         } finally {
             unregisterReceiver(sentReceiver);
         }
+        logToFile("[SMS] " + finalStatus[0]);
 
-        // Обновляем статус задачи
+        // Обновляем статус задачи в Supabase
         JSONObject updateBody = new JSONObject();
         updateBody.put("status", finalStatus[0]);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -162,32 +130,24 @@ public class SmsBotService extends Service {
         updateConn.setRequestProperty("Content-Type", "application/json");
         updateConn.setDoOutput(true);
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
-        int patchCode = updateConn.getResponseCode();
-        logToFile("[SUPABASE] Статус задачи обновлён: " + patchCode);
+        updateConn.getResponseCode();
 
-        // Если есть MediaProjection и Accessibility – делаем скриншот
-        if (finalStatus[0].equals("success") && mediaProjection != null
-                && SmsAccessibilityService.getInstance() != null) {
+        // Скриншот ДО возврата домой
+        if (finalStatus[0].equals("success") && mediaProjection != null && SmsAccessibilityService.getInstance() != null) {
             Intent homeIntent = new Intent(Intent.ACTION_MAIN);
             homeIntent.addCategory(Intent.CATEGORY_HOME);
             homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
-            logToFile("[ACCESS] Открываю SMS диалог...");
             SmsAccessibilityService.getInstance().openSmsDialog(phone);
-            Thread.sleep(2000);
+            Thread.sleep(4000);
 
-            logToFile("[ACCESS] Возвращаюсь на домашний экран...");
-            startActivity(homeIntent);
-            Thread.sleep(1000);
-
-            logToFile("[ACCESS] Снова открываю SMS диалог...");
-            SmsAccessibilityService.getInstance().openSmsDialog(phone);
-            logToFile("[SCREENSHOT] Жду 3 секунды...");
-            Thread.sleep(3000);
-
+            // Делаем скриншот прямо сейчас (до ухода домой)
             String screenshotBase64 = takeScreenshot();
+
+            // Только после скриншота возвращаемся домой
+            startActivity(homeIntent);
+
             if (screenshotBase64 != null) {
-                logToFile("[SCREENSHOT] Успешно сделан, размер base64: " + screenshotBase64.length());
                 updateBody = new JSONObject();
                 updateBody.put("screenshot", screenshotBase64);
                 updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -199,13 +159,10 @@ public class SmsBotService extends Service {
                 updateConn.setDoOutput(true);
                 updateConn.getOutputStream().write(updateBody.toString().getBytes());
                 updateConn.getResponseCode();
-                logToFile("[SUPABASE] Скриншот загружен в задачу #" + taskId);
+                logToFile("[SCREENSHOT] Готово, задача #" + taskId);
             } else {
-                logToFile("[SCREENSHOT] ОШИБКА: скриншот не сделан (base64 == null)");
+                logToFile("[SCREENSHOT] Ошибка: скриншот не получен");
             }
-            startActivity(homeIntent);
-        } else {
-            logToFile("[ERROR] Нет MediaProjection или Accessibility");
         }
     }
 
@@ -218,9 +175,9 @@ public class SmsBotService extends Service {
             DisplayMetrics metrics = new DisplayMetrics();
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             wm.getDefaultDisplay().getRealMetrics(metrics);
-            int width = metrics.widthPixels, height = metrics.heightPixels, density = metrics.densityDpi;
-            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3);
-            vd = mediaProjection.createVirtualDisplay("SMSBOT_SCREENSHOT", width, height, density,
+            int w = metrics.widthPixels, h = metrics.heightPixels, d = metrics.densityDpi;
+            reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3);
+            vd = mediaProjection.createVirtualDisplay("scr", w, h, d,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, null);
             for (int i = 0; i < 10; i++) {
                 Thread.sleep(300);
@@ -230,18 +187,15 @@ public class SmsBotService extends Service {
             if (image == null) return null;
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
-            int pixelStride = planes[0].getPixelStride();
-            int rowStride = planes[0].getRowStride();
-            int rowPadding = rowStride - pixelStride * width;
-            Bitmap bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888);
+            int ps = planes[0].getPixelStride(), rs = planes[0].getRowStride();
+            Bitmap bitmap = Bitmap.createBitmap(w + (rs - ps * w) / ps, h, Bitmap.Config.ARGB_8888);
             bitmap.copyPixelsFromBuffer(buffer);
-            Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, width, height);
+            Bitmap cropped = Bitmap.createBitmap(bitmap, 0, 0, w, h);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             cropped.compress(Bitmap.CompressFormat.JPEG, 80, baos);
             bitmap.recycle(); cropped.recycle();
             return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
         } catch (Exception e) {
-            logToFile("[SCREENSHOT] Ошибка: " + e.getMessage());
             return null;
         } finally {
             try { if (image != null) image.close(); } catch (Exception ignored) {}
@@ -250,16 +204,13 @@ public class SmsBotService extends Service {
         }
     }
 
-    private void logToFile(String message) {
+    private void logToFile(String msg) {
         try {
             File logFile = new File(getExternalFilesDir(null), "sms_bot_log.txt");
             FileWriter fw = new FileWriter(logFile, true);
-            String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
-            fw.write(timestamp + " " + message + "\n");
+            fw.write(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date()) + " " + msg + "\n");
             fw.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception ignored) {}
     }
 
     private Notification buildNotification() {
@@ -273,10 +224,6 @@ public class SmsBotService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
-
     @Override
-    public void onDestroy() {
-        running = false;
-        super.onDestroy();
-    }
+    public void onDestroy() { running = false; super.onDestroy(); }
 }
