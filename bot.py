@@ -58,6 +58,7 @@ def admin_main_keyboard():
         [InlineKeyboardButton(text="👑 Администраторы", callback_data="admins_menu"),
          InlineKeyboardButton(text="📊 Отчёты", callback_data="reports_menu")],
         [InlineKeyboardButton(text="🛠 Сброс статистики", callback_data="reset_menu")],
+        [InlineKeyboardButton(text="💾 Экспорт/Импорт БД", callback_data="db_menu")],
     ])
 
 def groups_menu_keyboard():
@@ -99,6 +100,13 @@ def reset_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="♻ Сбросить всё", callback_data="reset_all")],
         [InlineKeyboardButton(text="♻ Сбросить за сегодня", callback_data="reset_today")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+    ])
+
+def db_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 Выгрузить базу (JSON)", callback_data="db_export")],
+        [InlineKeyboardButton(text="📤 Загрузить базу (JSON)", callback_data="db_import")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
     ])
 
@@ -162,6 +170,12 @@ async def callback_handler(callback: CallbackQuery):
         await callback.message.edit_text("📊 Отчёты:", reply_markup=reports_menu_keyboard())
     elif cmd == "reset_menu":
         await callback.message.edit_text("♻ Сброс статистики:", reply_markup=reset_menu_keyboard())
+    elif cmd == "db_menu":
+        await callback.message.edit_text("💾 Экспорт/Импорт базы данных:", reply_markup=db_menu_keyboard())
+    elif cmd == "db_export":
+        await export_database(callback.message)
+    elif cmd == "db_import":
+        await callback.message.reply("Отправь JSON-файл базы данных в этом чате.")
 
     # Группы
     elif cmd == "group_add":
@@ -287,12 +301,84 @@ async def txt_upload(message: Message):
             else:
                 await message.reply("Ошибка получения логов.")
 
+# ---------- Экспорт базы данных ----------
+async def export_database(msg: Message):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    tables = ["tasks", "logs"]
+    export_data = {}
+
+    async with aiohttp.ClientSession() as session:
+        for table in tables:
+            async with session.get(f"{SUPABASE_URL}/rest/v1/{table}?select=*", headers=headers) as resp:
+                if resp.status == 200:
+                    export_data[table] = await resp.json()
+                else:
+                    await msg.reply(f"Ошибка экспорта таблицы {table}: {resp.status}")
+                    return
+
+    export_data["settings"] = load_data()
+
+    filename = f"db_export_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+    await msg.reply_document(FSInputFile(filename), caption="✅ База данных выгружена")
+
+# ---------- Импорт базы данных ----------
+@dp.message(lambda msg: msg.document and msg.document.file_name.endswith(".json"))
+async def handle_json_upload(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    file_path = file.file_path
+    await bot.download_file(file_path, "import.json")
+
+    try:
+        with open("import.json", "r", encoding="utf-8") as f:
+            import_data = json.load(f)
+    except Exception as e:
+        await message.reply(f"Ошибка чтения файла: {e}")
+        return
+
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        if "tasks" in import_data:
+            for task in import_data["tasks"]:
+                task.pop("id", None)
+                async with session.post(f"{SUPABASE_URL}/rest/v1/tasks", json=task, headers=headers) as resp:
+                    if resp.status not in [200, 201]:
+                        await message.reply(f"Ошибка импорта tasks: {resp.status}")
+                        return
+
+        if "logs" in import_data:
+            for log in import_data["logs"]:
+                log.pop("id", None)
+                async with session.post(f"{SUPABASE_URL}/rest/v1/logs", json=log, headers=headers) as resp:
+                    if resp.status not in [200, 201]:
+                        await message.reply(f"Ошибка импорта logs: {resp.status}")
+                        return
+
+        if "settings" in import_data:
+            save_data(import_data["settings"])
+            global data
+            data = import_data["settings"]
+
+    await message.reply("✅ База данных успешно импортирована!")
+    os.remove("import.json")
+
 # ---------- Обработка сообщений в группах ----------
 @dp.message()
 async def handle_any_message(message: Message):
     text = message.text.strip() if message.text else ""
 
-    # Дата для отчёта
     if re.match(r"\d{2}-\d{2}-\d{4}", text):
         try:
             dt = datetime.strptime(text, "%d-%m-%Y").date()
@@ -304,7 +390,6 @@ async def handle_any_message(message: Message):
             await message.reply("Неверный формат даты.")
         return
 
-    # Обработка номеров в отслеживаемых группах
     if str(message.chat.id) not in data.get("target_groups", {}):
         return
 
@@ -326,7 +411,11 @@ async def handle_any_message(message: Message):
         "Content-Type": "application/json",
         "Prefer": "return=minimal"
     }
-    payload = {"phone": phone, "template": template}
+    payload = {
+        "phone": phone,
+        "template": template,
+        "group_id": str(message.chat.id)
+    }
     async with aiohttp.ClientSession() as session:
         async with session.post(f"{SUPABASE_URL}/rest/v1/tasks", json=payload, headers=headers) as resp:
             if resp.status == 201:
@@ -428,7 +517,6 @@ async def check_completed_tasks():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                # Задачи со скриншотами (screenshot не null)
                 async with session.get(
                     f"{SUPABASE_URL}/rest/v1/tasks?select=*&screenshot=not.is.null&order=created_at.desc&limit=5",
                     headers=headers
@@ -443,19 +531,13 @@ async def check_completed_tasks():
                             phone = task["phone"]
                             status = task["status"]
                             screenshot_b64 = task.get("screenshot")
-                            for gid in data.get("target_groups", {}):
-                                if screenshot_b64:
-                                    scr = base64.b64decode(screenshot_b64)
-                                    cap = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой: {phone}"
-                                    await bot.send_photo(int(gid), BufferedInputFile(scr, "screen.jpg"), caption=cap)
-                                    # Очищаем скриншот в задаче, чтобы не занимал место
-                                    await session.patch(
-                                        f"{SUPABASE_URL}/rest/v1/tasks?id=eq.{tid}",
-                                        headers={**headers, "Content-Type": "application/json"},
-                                        json={"screenshot": None}
-                                    )
-
-                # Задачи без скриншотов (отправляем текст)
+                            target = task.get("group_id")
+                            if not target:
+                                continue
+                            if screenshot_b64:
+                                scr = base64.b64decode(screenshot_b64)
+                                cap = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой: {phone}"
+                                await bot.send_photo(int(target), BufferedInputFile(scr, "screen.jpg"), caption=cap)
                 async with session.get(
                     f"{SUPABASE_URL}/rest/v1/tasks?select=*&status=in.(success,failed)&screenshot=is.null&order=created_at.desc&limit=5",
                     headers=headers
@@ -469,9 +551,11 @@ async def check_completed_tasks():
                             processed_ids.add(tid)
                             phone = task["phone"]
                             status = task["status"]
-                            for gid in data.get("target_groups", {}):
-                                txt = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой: {phone}"
-                                await bot.send_message(int(gid), txt)
+                            target = task.get("group_id")
+                            if not target:
+                                continue
+                            txt = f"✅ Доставлено: {phone}" if status == "success" else f"❌ Сбой: {phone}"
+                            await bot.send_message(int(target), txt)
         except Exception as e:
             print("Checker error:", e)
         await asyncio.sleep(3)
