@@ -39,10 +39,6 @@ public class MainActivity extends Activity {
         mpManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
 
-        if (!prefs.getBoolean(KEY_PERMISSIONS_GRANTED, false)) {
-            checkAndRequestRequiredPermissions();
-        }
-
         Button btnAccessibility = findViewById(R.id.btnAccessibility);
         Button btnOverlay = findViewById(R.id.btnOverlay);
         Button btnScreenshot = findViewById(R.id.btnScreenshot);
@@ -56,29 +52,29 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Найдите SMS Bot и включите службу", Toast.LENGTH_LONG).show();
         });
 
-        // Кнопка "Разрешить окна" – используем надёжный метод
+        // Кнопка "Разрешить окна" – вызывает автовыдачу через Accessibility
         btnOverlay.setOnClickListener(v -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 if (!Settings.canDrawOverlays(this)) {
-                    // На некоторых устройствах требуется явный Intent с package
-                    Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:" + getPackageName()));
-                    // Добавляем флаг, чтобы открылось именно наше приложение
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivityForResult(intent, REQUEST_CODE_OVERLAY);
+                    if (SmsAccessibilityService.getInstance() != null) {
+                        Toast.makeText(this, "Идёт автоматическая настройка...", Toast.LENGTH_LONG).show();
+                        SmsAccessibilityService.getInstance().grantOverlayPermission();
+                    } else {
+                        Toast.makeText(this, "Сначала включите Accessibility службу", Toast.LENGTH_LONG).show();
+                    }
                 } else {
                     Toast.makeText(this, "Разрешение на окна уже выдано", Toast.LENGTH_SHORT).show();
                 }
             }
         });
 
-        // Кнопка "Разрешить скриншоты" – без краша
+        // Кнопка "Разрешить скриншоты" – защищена от краша
         btnScreenshot.setOnClickListener(v -> {
             try {
                 Intent intent = mpManager.createScreenCaptureIntent();
                 startActivityForResult(intent, REQUEST_CODE_SCREENSHOT);
             } catch (Exception e) {
-                Toast.makeText(this, "Ваше устройство не поддерживает захват экрана", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Перезагрузите телефон и попробуйте снова", Toast.LENGTH_LONG).show();
             }
         });
 
@@ -114,20 +110,6 @@ public class MainActivity extends Activity {
             stopService(serviceIntent);
             Toast.makeText(this, "Сервис остановлен", Toast.LENGTH_SHORT).show();
         });
-    }
-
-    private void checkAndRequestRequiredPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                Toast.makeText(this, "Отключите оптимизацию батареи для SMS Bot", Toast.LENGTH_LONG).show();
-                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, 100);
-                return;
-            }
-        }
-        prefs.edit().putBoolean(KEY_PERMISSIONS_GRANTED, true).apply();
     }
 
     private void copyFile(File source, File dest) throws Exception {
@@ -175,17 +157,6 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_CODE_SCREENSHOT && resultCode == RESULT_OK && data != null) {
             Toast.makeText(this, "Скриншоты разрешены", Toast.LENGTH_SHORT).show();
             startSmsService(data, resultCode);
-        } else if (requestCode == REQUEST_CODE_OVERLAY) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
-                Toast.makeText(this, "Разрешение на окна выдано!", Toast.LENGTH_SHORT).show();
-            } else {
-                // Если не получилось – предлагаем использовать LADB
-                Toast.makeText(this, "Не удалось выдать разрешение. Используйте LADB: " +
-                        "appops set com.smsbot SYSTEM_ALERT_WINDOW allow", Toast.LENGTH_LONG).show();
-            }
-            if (!prefs.getBoolean(KEY_PERMISSIONS_GRANTED, false)) {
-                checkAndRequestRequiredPermissions();
-            }
         }
     }
 }
