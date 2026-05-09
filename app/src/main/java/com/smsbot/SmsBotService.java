@@ -194,7 +194,7 @@ public class SmsBotService extends Service {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             cropped.compress(Bitmap.CompressFormat.JPEG, 80, baos);
             bitmap.recycle(); cropped.recycle();
-            return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+            return android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP);
         } catch (Exception e) {
             return null;
         } finally {
