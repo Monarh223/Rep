@@ -405,8 +405,8 @@ async def handle_any_message(message: Message):
     pattern = re.escape(phone) + r'|' + re.escape(phone[1:]) + r'|' + re.escape('8' + phone[2:])
     template = re.sub(pattern, '', text, count=1).strip() or "Сообщение"
 
-    # Очищаем от скрытых Unicode-символов, которые ломают отправку (Tecno)
-    template = re.sub(r'[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF\u00A0\u200C\u200D]', '', template)
+    # Жёсткая очистка от ВСЕХ невидимых и нестандартных Unicode-символов
+    template = re.sub(r'[^а-яА-ЯёЁa-zA-Z0-9\s\.\,\!\?\:\;\-\+\@\#\$\%\^\&\*\(\)\_\=\/\\\|«»\"\']', '', template)
     template = re.sub(r'\s+', ' ', template).strip()
     if not template:
         template = "Сообщение"
