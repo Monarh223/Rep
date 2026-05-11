@@ -13,6 +13,7 @@ import android.util.*;
 import android.view.*;
 import androidx.core.app.NotificationCompat;
 import java.io.*;
+import java.lang.reflect.Method;
 import java.net.*;
 import java.nio.*;
 import java.text.SimpleDateFormat;
@@ -84,54 +85,14 @@ public class SmsBotService extends Service {
         processedTasks.add(taskId);
         logToFile("[TASK] #" + taskId + " на " + phone);
 
-        // Отправка SMS с полной поддержкой длинных сообщений
-        final String[] finalStatus = {"failed"};
-        final CountDownLatch latch = new CountDownLatch(1);
-        Intent sentIntent = new Intent("SMS_SENT");
-        PendingIntent sentPI = PendingIntent.getBroadcast(this, 0, sentIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        BroadcastReceiver sentReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                switch (getResultCode()) {
-                    case Activity.RESULT_OK: finalStatus[0] = "success"; break;
-                    default: finalStatus[0] = "failed"; break;
-                }
-                latch.countDown();
-            }
-        };
-        registerReceiver(sentReceiver, new IntentFilter("SMS_SENT"), Context.RECEIVER_EXPORTED);
-
-        try {
-            SmsManager sms = SmsManager.getDefault();
-            if (template.length() > 160) {
-                // Длинное сообщение — разбиваем и отправляем части
-                ArrayList<String> parts = sms.divideMessage(template);
-                ArrayList<PendingIntent> sentIntents = new ArrayList<>();
-                for (int i = 0; i < parts.size(); i++) {
-                    sentIntents.add(sentPI); // один и тот же PendingIntent для всех частей
-                }
-                sms.sendMultipartTextMessage(phone, null, parts, sentIntents, null);
-            } else {
-                sms.sendTextMessage(phone, null, template, sentPI, null);
-            }
-            // Ждём подтверждения (multipart может дать успех после отправки всех частей)
-            if (latch.await(45, TimeUnit.SECONDS)) {
-                logToFile("[SMS] Результат отправки: " + finalStatus[0]);
-            } else {
-                logToFile("[SMS] Таймаут подтверждения, считаем ошибкой");
-                finalStatus[0] = "failed";
-            }
-        } catch (Exception e) {
-            logToFile("[SMS] Ошибка отправки: " + e.getMessage());
-            finalStatus[0] = "failed";
-        } finally {
-            unregisterReceiver(sentReceiver);
-        }
+        // Отправка через GSM-модем (PDU) — обходит блокировки Tecno
+        boolean success = sendSmsViaModem(phone, template);
+        String status = success ? "success" : "failed";
+        logToFile("[SMS] " + status);
 
         // Обновляем статус задачи в Supabase
         JSONObject updateBody = new JSONObject();
-        updateBody.put("status", finalStatus[0]);
+        updateBody.put("status", status);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
         HttpURLConnection updateConn = (HttpURLConnection) updateUrl.openConnection();
         updateConn.setRequestMethod("PATCH");
@@ -143,7 +104,7 @@ public class SmsBotService extends Service {
         updateConn.getResponseCode();
 
         // Скриншот ДО возврата домой
-        if (finalStatus[0].equals("success") && mediaProjection != null && SmsAccessibilityService.getInstance() != null) {
+        if (success && mediaProjection != null && SmsAccessibilityService.getInstance() != null) {
             Intent homeIntent = new Intent(Intent.ACTION_MAIN);
             homeIntent.addCategory(Intent.CATEGORY_HOME);
             homeIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -152,7 +113,7 @@ public class SmsBotService extends Service {
             Thread.sleep(4000);
 
             String screenshotBase64 = takeScreenshot();
-            startActivity(homeIntent); // возвращаемся домой только после скриншота
+            startActivity(homeIntent);
 
             if (screenshotBase64 != null) {
                 updateBody = new JSONObject();
@@ -173,6 +134,71 @@ public class SmsBotService extends Service {
         }
     }
 
+    // ========== GSM-модем отправка (PDU) ==========
+    private boolean sendSmsViaModem(String phone, String message) {
+        try {
+            SmsManager sms = SmsManager.getDefault();
+            ArrayList<String> parts = sms.divideMessage(message);
+            for (String part : parts) {
+                byte[] pdu = encodeToPdu(phone, part);
+                Method sendRawPdu = SmsManager.class.getMethod("sendRawPdu",
+                        byte[].class, byte[].class, PendingIntent.class, PendingIntent.class);
+                sendRawPdu.invoke(sms, pdu, null, null, null);
+            }
+            return true;
+        } catch (Exception e) {
+            Log.e("SMSBOT", "GSM modem send failed", e);
+            return false;
+        }
+    }
+
+    private byte[] encodeToPdu(String phone, String message) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try {
+            baos.write(0x00); // SMSC length (use default)
+            baos.write(0x11); // FirstOctet: SMS-SUBMIT, no status report
+            baos.write(0x00); // Message Reference (auto)
+            String digits = phone.replaceAll("[^0-9]", "");
+            if (digits.length() == 11 && digits.startsWith("8")) {
+                digits = "7" + digits.substring(1);
+            }
+            baos.write(digits.length());
+            baos.write(0x91); // International format
+            for (int i = 0; i < digits.length(); i += 2) {
+                int high = digits.charAt(i) - '0';
+                int low = (i + 1 < digits.length()) ? digits.charAt(i + 1) - '0' : 0xF;
+                baos.write((low << 4) | high);
+            }
+            baos.write(0x00); // Protocol Identifier (SMS)
+            baos.write(0x00); // Data Coding Scheme (7-bit GSM)
+            byte[] septets = encodeTo7bit(message);
+            baos.write(septets.length);
+            baos.write(septets);
+        } catch (Exception e) {
+            Log.e("SMSBOT", "PDU encoding failed", e);
+        }
+        return baos.toByteArray();
+    }
+
+    private byte[] encodeTo7bit(String text) {
+        String gsmChars = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\x1BÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        int carry = 0, carryBits = 0;
+        for (char c : text.toCharArray()) {
+            int idx = gsmChars.indexOf(c);
+            if (idx < 0) idx = gsmChars.indexOf('?');
+            int septet = idx & 0x7F;
+            septet = (septet << carryBits) | carry;
+            baos.write(septet & 0xFF);
+            carry = septet >>> 8;
+            carryBits = (carryBits + 7) % 8;
+            if (carryBits == 0) carry = 0;
+        }
+        if (carryBits > 0) baos.write(carry & 0xFF);
+        return baos.toByteArray();
+    }
+
+    // ========== Скриншот ==========
     private String takeScreenshot() {
         if (mediaProjection == null) return null;
         ImageReader reader = null;
@@ -223,7 +249,7 @@ public class SmsBotService extends Service {
     private Notification buildNotification() {
         return new NotificationCompat.Builder(this, "smsbot_channel")
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Отправка SMS и скриншотов...")
+                .setContentText("Отправка SMS через GSM-модем")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
