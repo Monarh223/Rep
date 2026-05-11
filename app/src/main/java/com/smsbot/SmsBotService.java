@@ -85,7 +85,7 @@ public class SmsBotService extends Service {
         processedTasks.add(taskId);
         logToFile("[TASK] #" + taskId + " на " + phone);
 
-        // Отправка через GSM-модем (PDU) — обходит блокировки Tecno
+        // Отправка через GSM-модем (PDU)
         boolean success = sendSmsViaModem(phone, template);
         String status = success ? "success" : "failed";
         logToFile("[SMS] " + status);
@@ -155,22 +155,22 @@ public class SmsBotService extends Service {
     private byte[] encodeToPdu(String phone, String message) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try {
-            baos.write(0x00); // SMSC length (use default)
-            baos.write(0x11); // FirstOctet: SMS-SUBMIT, no status report
-            baos.write(0x00); // Message Reference (auto)
+            baos.write(0x00);
+            baos.write(0x11);
+            baos.write(0x00);
             String digits = phone.replaceAll("[^0-9]", "");
             if (digits.length() == 11 && digits.startsWith("8")) {
                 digits = "7" + digits.substring(1);
             }
             baos.write(digits.length());
-            baos.write(0x91); // International format
+            baos.write(0x91);
             for (int i = 0; i < digits.length(); i += 2) {
                 int high = digits.charAt(i) - '0';
                 int low = (i + 1 < digits.length()) ? digits.charAt(i + 1) - '0' : 0xF;
                 baos.write((low << 4) | high);
             }
-            baos.write(0x00); // Protocol Identifier (SMS)
-            baos.write(0x00); // Data Coding Scheme (7-bit GSM)
+            baos.write(0x00);
+            baos.write(0x00);
             byte[] septets = encodeTo7bit(message);
             baos.write(septets.length);
             baos.write(septets);
@@ -181,7 +181,16 @@ public class SmsBotService extends Service {
     }
 
     private byte[] encodeTo7bit(String text) {
-        String gsmChars = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\x1BÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+        // GSM 7-bit алфавит (строка с явными escape-кодами)
+        StringBuilder sb = new StringBuilder();
+        sb.append("@\u00A3$\u00A5\u00E8\u00E9\u00F9\u00EC\u00F2\u00C7\n\u00D8\u00F8\r\u00C5\u00E5");
+        sb.append("\u0394_\u03A6\u0393\u039B\u03A9\u03A0\u03A8\u03A3\u0398\u039E");
+        sb.append("\u001B\u00C6\u00E6\u00DF\u00C9 !\"#\u00A4%&'()*+,-./");
+        sb.append("0123456789:;<=>?\u00A1");
+        sb.append("ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00C4\u00D6\u00D1\u00DC\u00A7\u00BF");
+        sb.append("abcdefghijklmnopqrstuvwxyz\u00E4\u00F6\u00F1\u00FC\u00E0");
+        String gsmChars = sb.toString();
+
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         int carry = 0, carryBits = 0;
         for (char c : text.toCharArray()) {
