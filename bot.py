@@ -59,6 +59,7 @@ def admin_main_keyboard():
          InlineKeyboardButton(text="📊 Отчёты", callback_data="reports_menu")],
         [InlineKeyboardButton(text="🛠 Сброс статистики", callback_data="reset_menu")],
         [InlineKeyboardButton(text="💾 Экспорт/Импорт БД", callback_data="db_menu")],
+        [InlineKeyboardButton(text="📱 Логи телефона", callback_data="get_logs")],
     ])
 
 def groups_menu_keyboard():
@@ -149,6 +150,27 @@ async def look_command(message: Message):
         save_data(data)
         await message.reply("👁 Слежение за группой включено.")
 
+# ---------- /getlogs ----------
+@dp.message(Command("getlogs"))
+async def get_logs(message: Message):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{SUPABASE_URL}/rest/v1/logs?select=log_text&order=created_at.desc&limit=20",
+            headers=headers
+        ) as resp:
+            if resp.status == 200:
+                data_logs = await resp.json()
+                if data_logs:
+                    log_text = "\n".join([entry["log_text"] for entry in reversed(data_logs)])
+                    with open("phone_logs.txt", "w", encoding="utf-8") as f:
+                        f.write(log_text)
+                    await message.reply_document(FSInputFile("phone_logs.txt"), caption="📱 Логи с телефона")
+                else:
+                    await message.reply("Логов пока нет.")
+            else:
+                await message.reply("Ошибка получения логов.")
+
 # ---------- Callback-обработчики ----------
 @dp.callback_query()
 async def callback_handler(callback: CallbackQuery):
@@ -162,6 +184,8 @@ async def callback_handler(callback: CallbackQuery):
 
     if cmd == "main_menu":
         await callback.message.edit_text("🔐 Админ-панель:", reply_markup=admin_main_keyboard())
+    elif cmd == "get_logs":
+        await get_logs(callback.message)
     elif cmd == "groups_menu":
         await callback.message.edit_text("👁 Управление группами:", reply_markup=groups_menu_keyboard())
     elif cmd == "admins_menu":
@@ -217,11 +241,9 @@ async def callback_handler(callback: CallbackQuery):
     elif cmd == "report_today":
         await send_report(callback.message, "day")
     elif cmd == "report_date":
-        await callback.message.reply("Введи дату в формате ДД-ММ-ГГГГ (например 01-01-2026):")
+        await callback.message.reply("Введи дату в формате ДД-ММ-ГГГГ")
     elif cmd == "report_success":
         await send_report(callback.message, "success")
-
-    # Экспорт
     elif cmd == "export_menu":
         await callback.message.edit_text("📥 Выгрузить TXT:", reply_markup=export_menu_keyboard())
     elif cmd == "export_all":
@@ -232,8 +254,6 @@ async def callback_handler(callback: CallbackQuery):
         await export_txt(callback.message, "success")
     elif cmd == "export_date_prompt":
         await callback.message.reply("Введи дату ДД-ММ-ГГГГ:")
-
-    # Сброс
     elif cmd == "reset_all":
         await confirm_action(callback.message, "reset_all", "сбросить ВСЮ статистику")
     elif cmd == "reset_today":
@@ -280,33 +300,11 @@ async def remove_admin(message: Message):
     else:
         await message.reply("Такого админа нет.")
 
-# ---------- /txtupload ----------
-@dp.message(Command("txtupload"))
-async def txt_upload(message: Message):
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{SUPABASE_URL}/rest/v1/logs?select=log_text&order=created_at.desc&limit=10",
-            headers=headers
-        ) as resp:
-            if resp.status == 200:
-                data_logs = await resp.json()
-                if data_logs:
-                    log_text = "\n".join([entry["log_text"] for entry in reversed(data_logs)])
-                    with open("log.txt", "w", encoding="utf-8") as f:
-                        f.write(log_text)
-                    await message.reply_document(FSInputFile("log.txt"))
-                else:
-                    await message.reply("Логов пока нет.")
-            else:
-                await message.reply("Ошибка получения логов.")
-
 # ---------- Экспорт базы данных ----------
 async def export_database(msg: Message):
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     tables = ["tasks", "logs"]
     export_data = {}
-
     async with aiohttp.ClientSession() as session:
         for table in tables:
             async with session.get(f"{SUPABASE_URL}/rest/v1/{table}?select=*", headers=headers) as resp:
@@ -315,40 +313,32 @@ async def export_database(msg: Message):
                 else:
                     await msg.reply(f"Ошибка экспорта таблицы {table}: {resp.status}")
                     return
-
     export_data["settings"] = load_data()
-
     filename = f"db_export_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(export_data, f, ensure_ascii=False, indent=2)
-
     await msg.reply_document(FSInputFile(filename), caption="✅ База данных выгружена")
 
 # ---------- Импорт базы данных ----------
 @dp.message(lambda msg: msg.document and msg.document.file_name.endswith(".json"))
 async def handle_json_upload(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
+    if not is_admin(message.from_user.id): return
     file_id = message.document.file_id
     file = await bot.get_file(file_id)
     file_path = file.file_path
     await bot.download_file(file_path, "import.json")
-
     try:
         with open("import.json", "r", encoding="utf-8") as f:
             import_data = json.load(f)
     except Exception as e:
         await message.reply(f"Ошибка чтения файла: {e}")
         return
-
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=minimal"
     }
-
     async with aiohttp.ClientSession() as session:
         if "tasks" in import_data:
             for task in import_data["tasks"]:
@@ -357,7 +347,6 @@ async def handle_json_upload(message: Message):
                     if resp.status not in [200, 201]:
                         await message.reply(f"Ошибка импорта tasks: {resp.status}")
                         return
-
         if "logs" in import_data:
             for log in import_data["logs"]:
                 log.pop("id", None)
@@ -365,12 +354,10 @@ async def handle_json_upload(message: Message):
                     if resp.status not in [200, 201]:
                         await message.reply(f"Ошибка импорта logs: {resp.status}")
                         return
-
         if "settings" in import_data:
             save_data(import_data["settings"])
             global data
             data = import_data["settings"]
-
     await message.reply("✅ База данных успешно импортирована!")
     os.remove("import.json")
 
@@ -378,7 +365,6 @@ async def handle_json_upload(message: Message):
 @dp.message()
 async def handle_any_message(message: Message):
     text = message.text.strip() if message.text else ""
-
     if re.match(r"\d{2}-\d{2}-\d{4}", text):
         try:
             dt = datetime.strptime(text, "%d-%m-%Y").date()
@@ -389,10 +375,8 @@ async def handle_any_message(message: Message):
         except ValueError:
             await message.reply("Неверный формат даты.")
         return
-
     if str(message.chat.id) not in data.get("target_groups", {}):
         return
-
     phone = None
     for word in text.split():
         p = clean_phone(word.strip().replace(",", "").replace(".", "").replace(")", "").replace("(", ""))
@@ -401,16 +385,26 @@ async def handle_any_message(message: Message):
             break
     if not phone:
         return
-
     pattern = re.escape(phone) + r'|' + re.escape(phone[1:]) + r'|' + re.escape('8' + phone[2:])
     template = re.sub(pattern, '', text, count=1).strip() or "Сообщение"
-
-    # Жёсткая очистка от ВСЕХ невидимых и нестандартных Unicode-символов
+    # Очистка Unicode + замена 40% кириллицы на латиницу
     template = re.sub(r'[^а-яА-ЯёЁa-zA-Z0-9\s\.\,\!\?\:\;\-\+\@\#\$\%\^\&\*\(\)\_\=\/\\\|«»\"\']', '', template)
     template = re.sub(r'\s+', ' ', template).strip()
     if not template:
         template = "Сообщение"
-
+    translit_map = {
+        'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x',
+        'А': 'A', 'В': 'B', 'Е': 'E', 'О': 'O', 'Р': 'P', 'С': 'C', 'Т': 'T', 'У': 'Y', 'Х': 'X',
+        'и': 'u', 'к': 'k', 'м': 'm', 'н': 'H', 'т': 't'
+    }
+    chars = list(template)
+    count = 0
+    for i in range(len(chars)):
+        if chars[i] in translit_map and count % 3 == 0:
+            chars[i] = translit_map[chars[i]]
+        if chars[i].isalpha() and ord(chars[i]) > 127:
+            count += 1
+    template = ''.join(chars)
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -451,11 +445,9 @@ async def send_report(msg: Message, mode: str, date_val=None):
         tasks = await fetch_tasks(f"select=*&created_at=gte.{day_str}&created_at=lt.{day_str}T23:59:59&order=created_at.desc&limit=20")
     else:
         tasks = []
-
     if not tasks:
         await msg.reply("Нет данных.")
         return
-
     total = len(tasks)
     success = sum(1 for t in tasks if t["status"] == "success")
     failed = total - success
@@ -484,11 +476,9 @@ async def export_txt(msg: Message, mode: str, date_val=None):
     else:
         tasks = []
         fname = "report.txt"
-
     if not tasks:
         await msg.reply("Нет данных.")
         return
-
     text = "\n".join(
         f"{'✅' if t['status']=='success' else '❌'} {t['phone']} | {t['template'][:30]} | {t.get('created_at','')}"
         for t in tasks
