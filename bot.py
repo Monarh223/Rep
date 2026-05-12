@@ -387,11 +387,17 @@ async def handle_any_message(message: Message):
         return
     pattern = re.escape(phone) + r'|' + re.escape(phone[1:]) + r'|' + re.escape('8' + phone[2:])
     template = re.sub(pattern, '', text, count=1).strip() or "Сообщение"
-    # Только очистка от невидимых Unicode-символов, без замены букв и обрезания
+
+    # 1. Очищаем от скрытых Unicode-символов (всех)
     template = re.sub(r'[\u200B-\u200F\u2028-\u202F\u2060-\u206F\uFEFF\u00A0\u200C\u200D]', '', template)
     template = re.sub(r'\s+', ' ', template).strip()
     if not template:
         template = "Сообщение"
+
+    # 2. Внедряем скрытый символ (U+200B) перед каждым номером в шаблоне,
+    #    чтобы обмануть спам-фильтр MTS
+    template = re.sub(r'(\+?\d{10,11})', r'\u200B\1', template)
+
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
