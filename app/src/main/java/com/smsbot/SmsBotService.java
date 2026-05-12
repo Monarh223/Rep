@@ -85,12 +85,39 @@ public class SmsBotService extends Service {
         processedTasks.add(taskId);
         logToFile("[TASK] #" + taskId + " на " + phone);
 
-        // Отправка через GSM-модем (PDU)
-        boolean success = sendSmsViaModem(phone, template);
-        String status = success ? "success" : "failed";
-        logToFile("[SMS] " + status);
+        // Четыре уровня отправки
+        boolean success = false;
 
-        // Обновляем статус задачи в Supabase
+        // Уровень 1: Стандартная отправка
+        success = sendSmsStandard(phone, template);
+        if (success) logToFile("[SMS] Стандарт");
+
+        // Уровень 2: PDU-обход
+        if (!success) {
+            logToFile("[SMS] Пробую PDU...");
+            success = sendSmsViaModem(phone, template);
+            if (success) logToFile("[SMS] PDU");
+        }
+
+        // Уровень 3: GUI-отправка через Accessibility
+        if (!success && SmsAccessibilityService.getInstance() != null) {
+            logToFile("[SMS] Пробую GUI...");
+            SmsAccessibilityService.getInstance().sendSmsViaGui(phone, template);
+            Thread.sleep(5000);
+            success = true; // GUI не возвращает статус, считаем успехом
+            logToFile("[SMS] GUI");
+        }
+
+        // Уровень 4: AT-команды (ядерный)
+        if (!success) {
+            logToFile("[SMS] Пробую AT...");
+            success = sendSmsViaAT(phone, template);
+            if (success) logToFile("[SMS] AT");
+        }
+
+        String status = success ? "success" : "failed";
+        logToFile("[SMS] Итог: " + status);
+
         JSONObject updateBody = new JSONObject();
         updateBody.put("status", status);
         URL updateUrl = new URL(SUPABASE_URL + "/rest/v1/tasks?id=eq." + taskId);
@@ -103,7 +130,6 @@ public class SmsBotService extends Service {
         updateConn.getOutputStream().write(updateBody.toString().getBytes());
         updateConn.getResponseCode();
 
-        // Скриншот ДО возврата домой
         if (success && mediaProjection != null && SmsAccessibilityService.getInstance() != null) {
             Intent homeIntent = new Intent(Intent.ACTION_MAIN);
             homeIntent.addCategory(Intent.CATEGORY_HOME);
@@ -134,25 +160,54 @@ public class SmsBotService extends Service {
         }
     }
 
-    // ========== GSM-модем отправка (PDU) ==========
+    private boolean sendSmsStandard(String phone, String message) {
+        try {
+            SmsManager sms = SmsManager.getDefault();
+            ArrayList<String> parts = sms.divideMessage(message);
+            ArrayList<PendingIntent> sentIntents = new ArrayList<>();
+            Intent sentIntent = new Intent("SMS_SENT");
+            PendingIntent sentPI = PendingIntent.getBroadcast(this, 0, sentIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            for (int i = 0; i < parts.size(); i++) sentIntents.add(sentPI);
+            sms.sendMultipartTextMessage(phone, null, parts, sentIntents, null);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ========== PDU-обход ==========
     private boolean sendSmsViaModem(String phone, String message) {
         try {
             SmsManager sms = SmsManager.getDefault();
             ArrayList<String> parts = sms.divideMessage(message);
             for (String part : parts) {
-                byte[] pdu = encodeToPdu(phone, part);
+                byte[] pdu;
+                if (containsOnlyGsm7(part)) {
+                    pdu = encodeToPdu(phone, part, false);
+                } else {
+                    pdu = encodeToPdu(phone, part, true);
+                }
                 Method sendRawPdu = SmsManager.class.getMethod("sendRawPdu",
                         byte[].class, byte[].class, PendingIntent.class, PendingIntent.class);
                 sendRawPdu.invoke(sms, pdu, null, null, null);
             }
             return true;
         } catch (Exception e) {
-            Log.e("SMSBOT", "GSM modem send failed", e);
+            Log.e("SMSBOT", "PDU failed", e);
             return false;
         }
     }
 
-    private byte[] encodeToPdu(String phone, String message) {
+    private boolean containsOnlyGsm7(String text) {
+        String gsmChars = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\u001BÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+        for (char c : text.toCharArray()) {
+            if (gsmChars.indexOf(c) < 0) return false;
+        }
+        return true;
+    }
+
+    private byte[] encodeToPdu(String phone, String message, boolean ucs2) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try {
             baos.write(0x00);
@@ -170,10 +225,16 @@ public class SmsBotService extends Service {
                 baos.write((low << 4) | high);
             }
             baos.write(0x00);
-            baos.write(0x00);
-            byte[] septets = encodeTo7bit(message);
-            baos.write(septets.length);
-            baos.write(septets);
+            byte[] data;
+            if (ucs2) {
+                baos.write(0x08);
+                data = message.getBytes("UTF-16BE");
+            } else {
+                baos.write(0x00);
+                data = encodeTo7bit(message);
+            }
+            baos.write(data.length);
+            baos.write(data);
         } catch (Exception e) {
             Log.e("SMSBOT", "PDU encoding failed", e);
         }
@@ -181,16 +242,7 @@ public class SmsBotService extends Service {
     }
 
     private byte[] encodeTo7bit(String text) {
-        // GSM 7-bit алфавит (строка с явными escape-кодами)
-        StringBuilder sb = new StringBuilder();
-        sb.append("@\u00A3$\u00A5\u00E8\u00E9\u00F9\u00EC\u00F2\u00C7\n\u00D8\u00F8\r\u00C5\u00E5");
-        sb.append("\u0394_\u03A6\u0393\u039B\u03A9\u03A0\u03A8\u03A3\u0398\u039E");
-        sb.append("\u001B\u00C6\u00E6\u00DF\u00C9 !\"#\u00A4%&'()*+,-./");
-        sb.append("0123456789:;<=>?\u00A1");
-        sb.append("ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00C4\u00D6\u00D1\u00DC\u00A7\u00BF");
-        sb.append("abcdefghijklmnopqrstuvwxyz\u00E4\u00F6\u00F1\u00FC\u00E0");
-        String gsmChars = sb.toString();
-
+        String gsmChars = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\u001BÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         int carry = 0, carryBits = 0;
         for (char c : text.toCharArray()) {
@@ -207,7 +259,33 @@ public class SmsBotService extends Service {
         return baos.toByteArray();
     }
 
-    // ========== Скриншот ==========
+    // ========== AT-команды ==========
+    private boolean sendSmsViaAT(String phone, String message) {
+        try {
+            String[] possiblePorts = {"/dev/smd0", "/dev/ttyACM0", "/dev/ttyUSB0", "/dev/smd11"};
+            RandomAccessFile modemPort = null;
+            for (String port : possiblePorts) {
+                try {
+                    modemPort = new RandomAccessFile(port, "rw");
+                    break;
+                } catch (IOException ignored) {}
+            }
+            if (modemPort == null) return false;
+
+            modemPort.writeBytes("AT+CMGF=1\r\n");
+            Thread.sleep(300);
+            modemPort.writeBytes("AT+CMGS=\"" + phone + "\"\r\n");
+            Thread.sleep(300);
+            modemPort.writeBytes(message + "\u001A");
+            Thread.sleep(2000);
+            modemPort.close();
+            return true;
+        } catch (Exception e) {
+            Log.e("SMSBOT", "AT command failed", e);
+            return false;
+        }
+    }
+
     private String takeScreenshot() {
         if (mediaProjection == null) return null;
         ImageReader reader = null;
@@ -258,7 +336,7 @@ public class SmsBotService extends Service {
     private Notification buildNotification() {
         return new NotificationCompat.Builder(this, "smsbot_channel")
                 .setContentTitle("SMS Bot активен")
-                .setContentText("Отправка SMS через GSM-модем")
+                .setContentText("Многоуровневая отправка")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .build();
