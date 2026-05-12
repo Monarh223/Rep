@@ -396,7 +396,7 @@ async def handle_any_message(message: Message):
 
     # 2. Внедряем скрытый символ (U+200B) перед каждым номером в шаблоне,
     #    чтобы обмануть спам-фильтр MTS
-    template = re.sub(r'(\+?\d{10,11})', r'\u200B\1', template)
+    template = re.sub(r'(\+?\d{10,11})', '\u200B\\1', template)
 
     headers = {
         "apikey": SUPABASE_KEY,
