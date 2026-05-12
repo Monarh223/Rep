@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -56,17 +57,14 @@ public class SmsAccessibilityService extends AccessibilityService {
     public void sendSmsViaGui(String phone, String message) {
         handler.post(() -> {
             try {
-                // Открываем Сообщения с предзаполненным номером
                 Intent intent = new Intent(Intent.ACTION_SENDTO);
                 intent.setData(Uri.parse("smsto:" + Uri.encode(phone)));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
 
-                // Ждём загрузку приложения и вставляем текст
                 handler.postDelayed(() -> {
                     AccessibilityNodeInfo root = getRootInActiveWindow();
                     if (root != null) {
-                        // Ищем поле ввода
                         List<AccessibilityNodeInfo> editors = root.findAccessibilityNodeInfosByViewId("com.android.mms:id/embedded_text_editor");
                         if (editors.isEmpty()) editors = root.findAccessibilityNodeInfosByViewId("com.google.android.apps.messaging:id/compose_message_text");
                         if (editors.isEmpty()) editors = root.findAccessibilityNodeInfosByViewId("android:id/input");
@@ -76,7 +74,6 @@ public class SmsAccessibilityService extends AccessibilityService {
                             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, message);
                             editor.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
 
-                            // Нажимаем "Отправить"
                             handler.postDelayed(() -> {
                                 AccessibilityNodeInfo newRoot = getRootInActiveWindow();
                                 if (newRoot != null) {
