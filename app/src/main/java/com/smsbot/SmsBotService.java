@@ -7,6 +7,7 @@ import android.hardware.display.*;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.*;
+import android.net.Uri;
 import android.os.*;
 import android.telephony.*;
 import android.util.*;
