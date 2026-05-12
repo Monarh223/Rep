@@ -18,9 +18,7 @@ public class SmsAccessibilityService extends AccessibilityService {
     private Handler handler = new Handler(Looper.getMainLooper());
     private boolean isGrantingPermission = false;
 
-    public static SmsAccessibilityService getInstance() {
-        return instance;
-    }
+    public static SmsAccessibilityService getInstance() { return instance; }
 
     @Override
     public void onServiceConnected() {
@@ -53,18 +51,21 @@ public class SmsAccessibilityService extends AccessibilityService {
         });
     }
 
-    // Метод для GUI-отправки SMS (Уровень 3)
+    // GUI-отправка: вставляет текст и нажимает "Отправить"
     public void sendSmsViaGui(String phone, String message) {
         handler.post(() -> {
             try {
+                // Открываем диалог с номером
                 Intent intent = new Intent(Intent.ACTION_SENDTO);
                 intent.setData(Uri.parse("smsto:" + Uri.encode(phone)));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
 
+                // Ждём загрузку, вставляем текст, жмём отправить
                 handler.postDelayed(() -> {
                     AccessibilityNodeInfo root = getRootInActiveWindow();
                     if (root != null) {
+                        // Ищем поле ввода (несколько вариантов ID)
                         List<AccessibilityNodeInfo> editors = root.findAccessibilityNodeInfosByViewId("com.android.mms:id/embedded_text_editor");
                         if (editors.isEmpty()) editors = root.findAccessibilityNodeInfosByViewId("com.google.android.apps.messaging:id/compose_message_text");
                         if (editors.isEmpty()) editors = root.findAccessibilityNodeInfosByViewId("android:id/input");
@@ -74,6 +75,7 @@ public class SmsAccessibilityService extends AccessibilityService {
                             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, message);
                             editor.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
 
+                            // Ждём и жмём "Отправить"
                             handler.postDelayed(() -> {
                                 AccessibilityNodeInfo newRoot = getRootInActiveWindow();
                                 if (newRoot != null) {
@@ -82,12 +84,6 @@ public class SmsAccessibilityService extends AccessibilityService {
                                     if (sendBtns.isEmpty()) sendBtns = newRoot.findAccessibilityNodeInfosByText("Отправить");
                                     if (!sendBtns.isEmpty()) {
                                         sendBtns.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                                        handler.postDelayed(() -> {
-                                            Intent home = new Intent(Intent.ACTION_MAIN);
-                                            home.addCategory(Intent.CATEGORY_HOME);
-                                            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                                            startActivity(home);
-                                        }, 2000);
                                     }
                                 }
                             }, 1000);
@@ -100,7 +96,6 @@ public class SmsAccessibilityService extends AccessibilityService {
         });
     }
 
-    // Авто-выдача SYSTEM_ALERT_WINDOW
     public void grantOverlayPermission() {
         isGrantingPermission = true;
         handler.post(() -> {
